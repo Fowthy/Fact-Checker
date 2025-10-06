@@ -80,31 +80,34 @@ if st.button("Fact Check", type="primary"):
         with st.spinner("Performing deep research and fact-checking..."):
             try:
                 # Prepare the prompt
-                prompt = f"""Run a deep research to fact check this text. Identify any misleading information, questionable statements, or missing important information that would confuse the reader.
+                prompt = f"""
+                
+                Run a deep research to fact check this text. Identify any misleading information, questionable statements, or missing important information that would confuse the reader.
 
-IMPORTANT: Respond in the SAME LANGUAGE as the input text. If the text is in Bulgarian, respond in Bulgarian. If it's in English, respond in English.
+                IMPORTANT: Respond in English.
 
-Return your analysis as a JSON object with the following structure:
-{{
-  "issues": [
-    {{
-      "excerpt": "exact text from the original that has an issue",
-      "issue": "explanation of what is wrong, misleading, or missing",
-      "type": "misleading" | "questionable" | "incomplete"
-    }}
-  ]
-}}
+                Return your analysis as a JSON object with the following structure:
+                {{
+                "issues": [
+                    {{
+                    "excerpt": "exact text from the original that has an issue",
+                    "issue": "explanation of what is wrong, misleading, or missing",
+                    "type": "misleading" | "questionable" | "incomplete"
+                    }}
+                ]
+                }}
 
-If no issues are found, return: {{"issues": []}}
+                If no issues are found, return: {{"issues": []}}
 
-Text to fact-check:
-{text_input}"""
+                Text to fact-check:
+                {text_input}
+"""
 
                 # Call OpenAI API
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=[
-                        {"role": "system", "content": "You are a professional fact-checker. Analyze texts thoroughly and identify misleading information, questionable statements, and missing context. Always respond in the same language as the input text."},
+                        {"role": "system", "content": "You are a professional fact-checker. Analyze texts thoroughly and identify misleading information, questionable statements, and missing context. Always respond in English."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3,
