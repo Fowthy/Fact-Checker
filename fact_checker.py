@@ -277,8 +277,7 @@ if st.button("Fact Check", type="primary"):
                         # Process streaming response (event-based)
                         result_text = ""
                         reasoning_text = ""
-                        reasoning_summary = ""
-                        web_search_calls = []  # Store full web search info
+                        reasoning_and_search_items = []  # Store all items in order
 
                         status_placeholder.info("🤔 Model is thinking and analyzing...")
 
@@ -326,22 +325,37 @@ if st.button("Fact Check", type="primary"):
 
                                             # Extract reasoning summary
                                             if item_type == 'reasoning':
+                                                reasoning_text = ""
                                                 if hasattr(output_item, 'summary') and output_item.summary:
                                                     for summary_item in output_item.summary:
                                                         if hasattr(summary_item, 'text'):
-                                                            reasoning_summary += summary_item.text
+                                                            reasoning_text += summary_item.text
+                                                if reasoning_text:
+                                                    reasoning_and_search_items.append({
+                                                        'type': 'reasoning',
+                                                        'text': reasoning_text
+                                                    })
 
                                             # Extract web search calls with query and sources
                                             elif item_type == 'web_search_call':
+                                                action = None
                                                 if hasattr(output_item, 'action'):
                                                     action = output_item.action
-                                                    query = getattr(action, 'query', '')
-                                                    sources = getattr(action, 'sources', [])
-                                                    if query or sources:
-                                                        web_search_calls.append({
-                                                            'query': query,
-                                                            'sources': sources
-                                                        })
+
+                                                if action:
+                                                    # Handle both dict and object
+                                                    if isinstance(action, dict):
+                                                        query = action.get('query', '')
+                                                        sources = action.get('sources', [])
+                                                    else:
+                                                        query = getattr(action, 'query', '')
+                                                        sources = getattr(action, 'sources', [])
+
+                                                    reasoning_and_search_items.append({
+                                                        'type': 'web_search',
+                                                        'query': query,
+                                                        'sources': sources
+                                                    })
 
                                             # Extract message text
                                             elif item_type in ['message', 'output_text']:
@@ -364,8 +378,7 @@ if st.button("Fact Check", type="primary"):
                     else:
                         # Non-streaming: wait for complete response
                         result_text = ""
-                        reasoning_summary = ""
-                        web_search_calls = []  # Store full web search info
+                        reasoning_and_search_items = []  # Store all items in order
 
                         # Extract both reasoning and message from response
                         if hasattr(response, 'output') and response.output:
@@ -374,22 +387,37 @@ if st.button("Fact Check", type="primary"):
 
                                 # Extract reasoning summary
                                 if item_type == 'reasoning':
+                                    reasoning_text = ""
                                     if hasattr(output_item, 'summary') and output_item.summary:
                                         for summary_item in output_item.summary:
                                             if hasattr(summary_item, 'text'):
-                                                reasoning_summary += summary_item.text
+                                                reasoning_text += summary_item.text
+                                    if reasoning_text:
+                                        reasoning_and_search_items.append({
+                                            'type': 'reasoning',
+                                            'text': reasoning_text
+                                        })
 
                                 # Extract web search calls with query and sources
                                 elif item_type == 'web_search_call':
+                                    action = None
                                     if hasattr(output_item, 'action'):
                                         action = output_item.action
-                                        query = getattr(action, 'query', '')
-                                        sources = getattr(action, 'sources', [])
-                                        if query or sources:
-                                            web_search_calls.append({
-                                                'query': query,
-                                                'sources': sources
-                                            })
+
+                                    if action:
+                                        # Handle both dict and object
+                                        if isinstance(action, dict):
+                                            query = action.get('query', '')
+                                            sources = action.get('sources', [])
+                                        else:
+                                            query = getattr(action, 'query', '')
+                                            sources = getattr(action, 'sources', [])
+
+                                        reasoning_and_search_items.append({
+                                            'type': 'web_search',
+                                            'query': query,
+                                            'sources': sources
+                                        })
 
                                 # Extract message text (the actual response)
                                 elif item_type == 'message' or item_type == 'output_text':
@@ -479,35 +507,47 @@ if st.button("Fact Check", type="primary"):
 
                 st.success("Fact-check complete!")
 
-                # Display reasoning summary if available
-                if model_choice.startswith("gpt-5") and 'reasoning_summary' in locals() and reasoning_summary:
+                # Display reasoning summary and web searches if available
+                if model_choice.startswith("gpt-5") and 'reasoning_and_search_items' in locals() and reasoning_and_search_items:
                     with st.expander("🧠 Reasoning Summary & Web Search", expanded=False):
-                        st.markdown(reasoning_summary)
+                        search_counter = 0
+                        for item in reasoning_and_search_items:
+                            if item['type'] == 'reasoning':
+                                # Display reasoning text
+                                st.markdown(item['text'])
+                                st.markdown("")  # Add spacing
 
-                        # Display web search calls if available
-                        if 'web_search_calls' in locals() and web_search_calls:
-                            st.markdown("---")
-                            st.markdown("**🔍 Web Searches Performed:**")
-                            for search_idx, search_call in enumerate(web_search_calls, 1):
-                                query = search_call.get('query', '')
-                                sources = search_call.get('sources', [])
+                            elif item['type'] == 'web_search':
+                                # Display web search
+                                search_counter += 1
+                                query = item.get('query', '')
+                                sources = item.get('sources', [])
 
+                                st.markdown("---")
                                 if query:
-                                    st.markdown(f"**Search {search_idx}:** {query}")
+                                    st.markdown(f"**🔍 Web Search {search_counter}:** {query}")
+                                else:
+                                    st.markdown(f"**🔍 Web Search {search_counter}**")
 
                                 if sources:
                                     for idx, source in enumerate(sources, 1):
-                                        if hasattr(source, 'url'):
-                                            url = source.url
-                                            st.markdown(f"  {idx}. [{url}]({url})")
-                                        elif isinstance(source, dict):
+                                        url = None
+                                        # Handle dict
+                                        if isinstance(source, dict):
                                             url = source.get('url', '')
-                                            st.markdown(f"  {idx}. [{url}]({url})")
+                                        # Handle object with url attribute
+                                        elif hasattr(source, 'url'):
+                                            url = source.url
+                                        # Handle plain string
                                         else:
-                                            st.markdown(f"  {idx}. {source}")
+                                            url = str(source)
 
-                                if search_idx < len(web_search_calls):
-                                    st.markdown("")  # Add spacing between searches
+                                        if url:
+                                            st.markdown(f"{idx}. [{url}]({url})")
+                                        else:
+                                            st.markdown(f"{idx}. (no URL)")
+
+                                st.markdown("")  # Add spacing
 
                 # Display raw API response at the bottom
                 with st.expander("📋 Raw API Response (Debug)", expanded=False):
