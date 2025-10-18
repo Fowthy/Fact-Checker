@@ -45,15 +45,20 @@ with st.sidebar:
             help="Controls how detailed the explanations are"
         )
 
-        # Web search option (for search-enabled models)
-        if model_choice == "gpt-5-search-api":
-            enable_web_search = st.checkbox(
-                "Enable Web Search",
-                value=True,
-                help="Allow the model to search the web for fact-checking"
+        # Web search option (for GPT-5 models)
+        enable_web_search = st.checkbox(
+            "Enable Web Search",
+            value=True,
+            help="Allow the model to search the web for fact-checking"
+        )
+
+        if enable_web_search:
+            search_context_size = st.selectbox(
+                "Search Context Size",
+                ["low", "medium", "high"],
+                index=1,
+                help="Amount of web search context to include"
             )
-        else:
-            enable_web_search = False
     else:
         reasoning_effort = None
         verbosity = None
@@ -72,6 +77,8 @@ with st.sidebar:
         st.caption(f"Reasoning: {reasoning_effort}")
     if verbosity:
         st.caption(f"Verbosity: {verbosity}")
+    if model_choice.startswith("gpt-5") and enable_web_search:
+        st.caption(f"Web Search: On ({search_context_size})")
     st.caption(f"Streaming: {'On' if enable_streaming else 'Off'}")
 
 # Text input area
@@ -225,7 +232,20 @@ if st.button("Fact Check", type="primary"):
 
                     # Add web search tool if enabled
                     if enable_web_search:
-                        api_params["tools"] = [{"type": "web_search"}]
+                        api_params["tools"] = [
+                            {
+                                "type": "web_search",
+                                "user_location": {
+                                    "type": "approximate"
+                                },
+                                "search_context_size": search_context_size
+                            }
+                        ]
+                        api_params["store"] = True
+                        api_params["include"] = [
+                            "reasoning.encrypted_content",
+                            "web_search_call.action.sources"
+                        ]
 
                     # Make API call using responses endpoint
                     response = client.responses.create(**api_params)
