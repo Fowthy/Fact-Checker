@@ -144,7 +144,7 @@ if st.button("Fact Check", type="primary"):
             try:
                 # Prepare the prompt
                 prompt = f"""
-                
+
                 Run a deep research to fact check this text. Identify any misleading information, questionable statements, or missing important information that would confuse the reader.
 
                 IMPORTANT: Respond in English.
@@ -155,12 +155,16 @@ if st.button("Fact Check", type="primary"):
                     {{
                     "excerpt": "exact text from the original that has an issue",
                     "issue": "explanation of what is wrong, misleading, or missing",
-                    "type": "misleading" | "questionable" | "incomplete"
+                    "type": "misleading" | "questionable" | "incomplete",
+                    "sources": ["URL or source 1", "URL or source 2"]
                     }}
-                ]
+                ],
+                "all_sources": ["list", "of", "all", "sources", "used"]
                 }}
 
-                If no issues are found, return: {{"issues": []}}
+                For each issue, provide the sources you used to verify the information. Include ALL sources at the end in the all_sources array.
+
+                If no issues are found, return: {{"issues": [], "all_sources": []}}
 
                 Text to fact-check:
                 {text_input}
@@ -177,14 +181,22 @@ if st.button("Fact Check", type="primary"):
                                 "properties": {
                                     "excerpt": {"type": "string"},
                                     "issue": {"type": "string"},
-                                    "type": {"type": "string", "enum": ["misleading", "questionable", "incomplete"]}
+                                    "type": {"type": "string", "enum": ["misleading", "questionable", "incomplete"]},
+                                    "sources": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    }
                                 },
-                                "required": ["excerpt", "issue", "type"],
+                                "required": ["excerpt", "issue", "type", "sources"],
                                 "additionalProperties": False
                             }
+                        },
+                        "all_sources": {
+                            "type": "array",
+                            "items": {"type": "string"}
                         }
                     },
-                    "required": ["issues"],
+                    "required": ["issues", "all_sources"],
                     "additionalProperties": False
                 }
 
@@ -255,6 +267,7 @@ if st.button("Fact Check", type="primary"):
                         result_text = ""
                         reasoning_text = ""
                         reasoning_summary = ""
+                        web_search_sources = []
 
                         status_placeholder.info("🤔 Model is thinking and analyzing...")
 
@@ -307,6 +320,11 @@ if st.button("Fact Check", type="primary"):
                                                         if hasattr(summary_item, 'text'):
                                                             reasoning_summary += summary_item.text
 
+                                            # Extract web search sources
+                                            elif item_type == 'web_search_call':
+                                                if hasattr(output_item, 'action') and hasattr(output_item.action, 'sources'):
+                                                    web_search_sources.extend(output_item.action.sources)
+
                                             # Extract message text
                                             elif item_type in ['message', 'output_text']:
                                                 if hasattr(output_item, 'content') and output_item.content and not result_text:
@@ -329,6 +347,7 @@ if st.button("Fact Check", type="primary"):
                         # Non-streaming: wait for complete response
                         result_text = ""
                         reasoning_summary = ""
+                        web_search_sources = []
 
                         # Extract both reasoning and message from response
                         if hasattr(response, 'output') and response.output:
@@ -341,6 +360,11 @@ if st.button("Fact Check", type="primary"):
                                         for summary_item in output_item.summary:
                                             if hasattr(summary_item, 'text'):
                                                 reasoning_summary += summary_item.text
+
+                                # Extract web search sources
+                                elif item_type == 'web_search_call':
+                                    if hasattr(output_item, 'action') and hasattr(output_item.action, 'sources'):
+                                        web_search_sources.extend(output_item.action.sources)
 
                                 # Extract message text (the actual response)
                                 elif item_type == 'message' or item_type == 'output_text':
@@ -410,26 +434,44 @@ if st.button("Fact Check", type="primary"):
                     if not result_text or result_text.strip() == "":
                         st.error("No response received from the API. Please check your API key and model availability.")
                         issues = []
+                        all_sources = []
                     else:
                         result_json = json.loads(result_text)
                         # Handle different possible JSON structures
                         if isinstance(result_json, dict):
                             issues = result_json.get('issues', result_json.get('findings', []))
+                            all_sources = result_json.get('all_sources', [])
                             if not isinstance(issues, list):
                                 issues = [result_json]
                         else:
                             issues = result_json
+                            all_sources = []
                 except json.JSONDecodeError as e:
                     st.error(f"Failed to parse fact-check results. Error: {str(e)}")
                     st.text(result_text)
                     issues = []
+                    all_sources = []
 
                 st.success("Fact-check complete!")
 
                 # Display reasoning summary if available
                 if model_choice.startswith("gpt-5") and 'reasoning_summary' in locals() and reasoning_summary:
-                    with st.expander("🧠 Reasoning Summary", expanded=False):
+                    with st.expander("🧠 Reasoning Summary & Web Search", expanded=False):
                         st.markdown(reasoning_summary)
+
+                        # Display web search sources if available
+                        if 'web_search_sources' in locals() and web_search_sources:
+                            st.markdown("---")
+                            st.markdown("**🔍 Web Search Sources:**")
+                            for idx, source in enumerate(web_search_sources, 1):
+                                if hasattr(source, 'url') and hasattr(source, 'title'):
+                                    st.markdown(f"{idx}. [{source.title}]({source.url})")
+                                elif isinstance(source, dict):
+                                    url = source.get('url', '')
+                                    title = source.get('title', url)
+                                    st.markdown(f"{idx}. [{title}]({url})")
+                                else:
+                                    st.markdown(f"{idx}. {source}")
 
                 # Display raw API response at the bottom
                 with st.expander("📋 Raw API Response (Debug)", expanded=False):
@@ -511,6 +553,7 @@ if st.button("Fact Check", type="primary"):
                         issue_type = issue.get('type', 'questionable').title()
                         excerpt = issue.get('excerpt', 'N/A')
                         explanation = issue.get('issue', 'No explanation provided')
+                        issue_sources = issue.get('sources', [])
 
                         # Color for issue type badge
                         type_colors = {
@@ -520,15 +563,49 @@ if st.button("Fact Check", type="primary"):
                         }
                         icon = type_colors.get(issue_type, '⚪')
 
+                        # Build sources HTML
+                        sources_html = ""
+                        if issue_sources:
+                            sources_html = "<br><br><b>Sources:</b><br>"
+                            for idx, src in enumerate(issue_sources, 1):
+                                # Make URLs clickable
+                                if src.startswith('http'):
+                                    sources_html += f'{idx}. <a href="{src}" target="_blank" style="color: #0066cc;">{src}</a><br>'
+                                else:
+                                    sources_html += f'{idx}. {src}<br>'
+
                         st.markdown(f"""
                         <div id="issue-{i}" style="padding: 10px; margin-bottom: 15px; border-left: 3px solid #ccc; background-color: #f9f9f9; color: #000; transition: box-shadow 0.3s;">
                             <b>{icon} Issue #{i+1}: {issue_type}</b><br>
                             <i style="color: #666;">"{excerpt[:100]}{'...' if len(excerpt) > 100 else ''}"</i><br><br>
                             <div style="color: #000;">{explanation}</div>
+                            {sources_html}
                         </div>
                         """, unsafe_allow_html=True)
+
+                    # Display all sources section
+                    if all_sources:
+                        st.markdown("---")
+                        st.markdown("### 📚 All Sources Used")
+                        for idx, source in enumerate(all_sources, 1):
+                            # Make URLs clickable
+                            if source.startswith('http'):
+                                st.markdown(f"{idx}. [{source}]({source})")
+                            else:
+                                st.markdown(f"{idx}. {source}")
                 else:
                     st.success("✅ No issues found! The text appears to be accurate and complete.")
+
+                    # Still show sources if available even when no issues found
+                    if 'all_sources' in locals() and all_sources:
+                        st.markdown("---")
+                        st.markdown("### 📚 Sources Consulted")
+                        for idx, source in enumerate(all_sources, 1):
+                            # Make URLs clickable
+                            if source.startswith('http'):
+                                st.markdown(f"{idx}. [{source}]({source})")
+                            else:
+                                st.markdown(f"{idx}. {source}")
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
