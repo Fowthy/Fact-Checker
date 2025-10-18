@@ -103,6 +103,7 @@ def highlight_text(original_text, issues):
         excerpt = issue.get('excerpt', '')
         issue_type = issue.get('type', 'questionable')
         explanation = issue.get('issue', 'No explanation')
+        sources = issue.get('sources', [])
 
         # Color code by type
         colors = {
@@ -115,20 +116,30 @@ def highlight_text(original_text, issues):
         if excerpt and excerpt in highlighted:
             # Create a unique placeholder
             placeholder = f"___HIGHLIGHT_{i}___"
-            replacements.append((placeholder, excerpt, color, i, explanation))
+            replacements.append((placeholder, excerpt, color, i, explanation, sources))
             highlighted = highlighted.replace(excerpt, placeholder, 1)
 
     # Replace placeholders with HTML
-    for placeholder, excerpt, color, idx, explanation in replacements:
+    for placeholder, excerpt, color, idx, explanation, sources in replacements:
         # Escape quotes in explanation for HTML attribute
         escaped_explanation = explanation.replace('"', '&quot;').replace("'", '&#39;')
+
+        # Add sources to tooltip if available
+        tooltip_text = f"Description ⬇\n\n{escaped_explanation}"
+        if sources:
+            tooltip_text += "\n\nSources:\n"
+            for src_idx, src in enumerate(sources, 1):
+                tooltip_text += f"{src_idx}. {src}\n"
+
+        # Escape the full tooltip
+        escaped_tooltip = tooltip_text.replace('"', '&quot;').replace("'", '&#39;')
 
         html_highlight = f'''<mark
             id="highlight-{idx}"
             class="fact-issue fact-issue-{idx}"
             data-issue-id="issue-{idx}"
             style="background-color: {color}; color: #000; padding: 2px 4px; border-radius: 3px; cursor: help; border: 2px solid transparent; transition: all 0.2s ease;"
-            title="Description ⬇\n\n{escaped_explanation}">{excerpt}</mark>'''
+            title="{escaped_tooltip}">{excerpt}</mark>'''
         highlighted = highlighted.replace(placeholder, html_highlight)
 
     return highlighted
@@ -267,7 +278,7 @@ if st.button("Fact Check", type="primary"):
                         result_text = ""
                         reasoning_text = ""
                         reasoning_summary = ""
-                        web_search_sources = []
+                        web_search_calls = []  # Store full web search info
 
                         status_placeholder.info("🤔 Model is thinking and analyzing...")
 
@@ -320,10 +331,17 @@ if st.button("Fact Check", type="primary"):
                                                         if hasattr(summary_item, 'text'):
                                                             reasoning_summary += summary_item.text
 
-                                            # Extract web search sources
+                                            # Extract web search calls with query and sources
                                             elif item_type == 'web_search_call':
-                                                if hasattr(output_item, 'action') and hasattr(output_item.action, 'sources'):
-                                                    web_search_sources.extend(output_item.action.sources)
+                                                if hasattr(output_item, 'action'):
+                                                    action = output_item.action
+                                                    query = getattr(action, 'query', '')
+                                                    sources = getattr(action, 'sources', [])
+                                                    if query or sources:
+                                                        web_search_calls.append({
+                                                            'query': query,
+                                                            'sources': sources
+                                                        })
 
                                             # Extract message text
                                             elif item_type in ['message', 'output_text']:
@@ -347,7 +365,7 @@ if st.button("Fact Check", type="primary"):
                         # Non-streaming: wait for complete response
                         result_text = ""
                         reasoning_summary = ""
-                        web_search_sources = []
+                        web_search_calls = []  # Store full web search info
 
                         # Extract both reasoning and message from response
                         if hasattr(response, 'output') and response.output:
@@ -361,10 +379,17 @@ if st.button("Fact Check", type="primary"):
                                             if hasattr(summary_item, 'text'):
                                                 reasoning_summary += summary_item.text
 
-                                # Extract web search sources
+                                # Extract web search calls with query and sources
                                 elif item_type == 'web_search_call':
-                                    if hasattr(output_item, 'action') and hasattr(output_item.action, 'sources'):
-                                        web_search_sources.extend(output_item.action.sources)
+                                    if hasattr(output_item, 'action'):
+                                        action = output_item.action
+                                        query = getattr(action, 'query', '')
+                                        sources = getattr(action, 'sources', [])
+                                        if query or sources:
+                                            web_search_calls.append({
+                                                'query': query,
+                                                'sources': sources
+                                            })
 
                                 # Extract message text (the actual response)
                                 elif item_type == 'message' or item_type == 'output_text':
@@ -459,19 +484,30 @@ if st.button("Fact Check", type="primary"):
                     with st.expander("🧠 Reasoning Summary & Web Search", expanded=False):
                         st.markdown(reasoning_summary)
 
-                        # Display web search sources if available
-                        if 'web_search_sources' in locals() and web_search_sources:
+                        # Display web search calls if available
+                        if 'web_search_calls' in locals() and web_search_calls:
                             st.markdown("---")
-                            st.markdown("**🔍 Web Search Sources:**")
-                            for idx, source in enumerate(web_search_sources, 1):
-                                if hasattr(source, 'url') and hasattr(source, 'title'):
-                                    st.markdown(f"{idx}. [{source.title}]({source.url})")
-                                elif isinstance(source, dict):
-                                    url = source.get('url', '')
-                                    title = source.get('title', url)
-                                    st.markdown(f"{idx}. [{title}]({url})")
-                                else:
-                                    st.markdown(f"{idx}. {source}")
+                            st.markdown("**🔍 Web Searches Performed:**")
+                            for search_idx, search_call in enumerate(web_search_calls, 1):
+                                query = search_call.get('query', '')
+                                sources = search_call.get('sources', [])
+
+                                if query:
+                                    st.markdown(f"**Search {search_idx}:** {query}")
+
+                                if sources:
+                                    for idx, source in enumerate(sources, 1):
+                                        if hasattr(source, 'url'):
+                                            url = source.url
+                                            st.markdown(f"  {idx}. [{url}]({url})")
+                                        elif isinstance(source, dict):
+                                            url = source.get('url', '')
+                                            st.markdown(f"  {idx}. [{url}]({url})")
+                                        else:
+                                            st.markdown(f"  {idx}. {source}")
+
+                                if search_idx < len(web_search_calls):
+                                    st.markdown("")  # Add spacing between searches
 
                 # Display raw API response at the bottom
                 with st.expander("📋 Raw API Response (Debug)", expanded=False):
@@ -543,7 +579,7 @@ if st.button("Fact Check", type="primary"):
                         <mark style="background-color: #fff4cc; padding: 2px 4px; color: #000;">Questionable</mark>
                         <mark style="background-color: #cce5ff; padding: 2px 4px; color: #000;">Incomplete</mark>
                         <br><br>
-                        <small>💡 Hover over highlights to see full explanations. See details below ⬇</small>
+                        <small>💡 Hover over highlights to see full explanations and sources. See details below ⬇</small>
                     </div>
                     """, unsafe_allow_html=True)
 
