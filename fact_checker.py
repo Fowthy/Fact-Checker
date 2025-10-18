@@ -294,26 +294,9 @@ if st.button("Fact Check", type="primary"):
                                     result_text += event.text
                                     streaming_placeholder.markdown(f"**Live Response:**\n```json\n{result_text}\n```")
 
-                            # Done event contains the final item
+                            # Done event - handled in completed event below
                             elif event_type == 'response.output_item.done':
-                                if hasattr(event, 'item'):
-                                    item = event.item
-                                    item_type = getattr(item, 'type', None)
-
-                                    # Extract reasoning summary
-                                    if item_type == 'reasoning' and hasattr(item, 'summary') and item.summary:
-                                        for summary_item in item.summary:
-                                            if hasattr(summary_item, 'text'):
-                                                reasoning_summary += summary_item.text
-
-                                    # Extract text from message/output_text items
-                                    elif item_type in ['message', 'output_text']:
-                                        if hasattr(item, 'content') and item.content and not result_text:
-                                            for content_item in item.content:
-                                                if hasattr(content_item, 'text'):
-                                                    result_text += content_item.text
-                                        elif hasattr(item, 'text') and not result_text:
-                                            result_text = item.text
+                                pass  # All extraction happens in response.completed
 
                             # Completed event contains the final response
                             elif event_type == 'response.completed':
@@ -566,7 +549,7 @@ if st.button("Fact Check", type="primary"):
                         st.write("**Extracted Values:**")
                         st.json({
                             "model": model_choice,
-                            "reasoning_summary_length": len(reasoning_summary) if 'reasoning_summary' in locals() and reasoning_summary else 0,
+                            "reasoning_and_search_items_count": len(reasoning_and_search_items) if 'reasoning_and_search_items' in locals() else 0,
                             "result_text_length": len(result_text) if result_text else 0,
                             "parsed_issues_count": len(issues) if issues else 0
                         })
