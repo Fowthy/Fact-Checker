@@ -216,6 +216,18 @@ with st.expander("🐛 Debug Info", expanded=False):
     st.code(st.session_state.main_text_input, language=None)
     st.write(f"Length: {len(st.session_state.main_text_input)} characters")
 
+    # Show URL formatting
+    import re
+    urls_found = re.findall(r'\(https?://[^\)]+\)', st.session_state.main_text_input)
+    if urls_found:
+        st.write(f"**URLs found in text:** {len(urls_found)}")
+        for idx, url in enumerate(urls_found[:5], 1):  # Show first 5
+            st.code(url, language=None)
+        if len(urls_found) > 5:
+            st.write(f"... and {len(urls_found) - 5} more")
+    else:
+        st.write("**No URLs found in text**")
+
 def strip_urls(text):
     """Remove URLs in parentheses from text for AI processing"""
     import re
@@ -237,6 +249,9 @@ def highlight_text(original_text, issues):
 
     highlighted = original_text
     replacements = []
+
+    # Debug info
+    match_debug = []
 
     # Build a mapping from stripped text positions to original text positions
     def build_position_map(text):
@@ -277,13 +292,30 @@ def highlight_text(original_text, issues):
         color = colors.get(issue_type, '#fff4cc')
 
         if not excerpt:
+            # For incomplete type issues, empty excerpt is OK - skip highlighting
+            if issue_type == 'incomplete':
+                match_debug.append({
+                    'index': i,
+                    'excerpt': '(empty - incomplete issue)',
+                    'matched': 'N/A',
+                    'reason': 'Incomplete type - no specific text to highlight'
+                })
+            else:
+                match_debug.append({
+                    'index': i,
+                    'excerpt': '(empty)',
+                    'matched': False,
+                    'reason': 'Empty excerpt'
+                })
             continue
 
         text_to_highlight = None
+        match_method = None
 
         # Strategy 1: Try exact match first (AI included URLs exactly as in original)
         if excerpt in highlighted:
             text_to_highlight = excerpt
+            match_method = "Exact match"
         else:
             # Strategy 2: Match using stripped text
             excerpt_stripped, _ = build_position_map(excerpt)
@@ -308,6 +340,24 @@ def highlight_text(original_text, issues):
                         end_in_original += len(url_match.group())
 
                     text_to_highlight = original_text[start_in_original:end_in_original]
+                    match_method = "Position mapping"
+            else:
+                # Strategy 3: Try fuzzy match with normalized whitespace
+                excerpt_normalized = ' '.join(excerpt_stripped.split())
+                original_normalized = ' '.join(original_stripped.split())
+
+                pos_norm = original_normalized.find(excerpt_normalized)
+                if pos_norm != -1:
+                    # Try to find approximate position
+                    # Count words before position
+                    words_before = len(original_normalized[:pos_norm].split())
+                    words_in_excerpt = len(excerpt_normalized.split())
+
+                    # Split original by words
+                    original_words = original_text.split()
+                    if words_before + words_in_excerpt <= len(original_words):
+                        text_to_highlight = ' '.join(original_words[words_before:words_before + words_in_excerpt])
+                        match_method = "Fuzzy word match"
 
         # If we found something to highlight, add it
         if text_to_highlight and text_to_highlight in highlighted:
@@ -315,6 +365,21 @@ def highlight_text(original_text, issues):
             placeholder = f"___HIGHLIGHT_{i}___"
             replacements.append((placeholder, text_to_highlight, color, i, explanation, sources))
             highlighted = highlighted.replace(text_to_highlight, placeholder, 1)
+            match_debug.append({
+                'index': i,
+                'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
+                'matched': True,
+                'method': match_method,
+                'highlighted_text': text_to_highlight[:50] + '...' if len(text_to_highlight) > 50 else text_to_highlight
+            })
+        else:
+            match_debug.append({
+                'index': i,
+                'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
+                'matched': False,
+                'reason': 'Not found in text' if not text_to_highlight else 'Already replaced',
+                'excerpt_stripped': excerpt_stripped[:50] + '...' if len(excerpt_stripped) > 50 else excerpt_stripped
+            })
 
     # Replace placeholders with HTML
     for placeholder, excerpt_with_urls, color, idx, explanation, sources in replacements:
@@ -339,6 +404,10 @@ def highlight_text(original_text, issues):
             title="{escaped_tooltip}">{excerpt_with_urls}</mark>'''
         highlighted = highlighted.replace(placeholder, html_highlight)
 
+    # Store debug info in session state
+    import streamlit as st
+    st.session_state.highlight_debug = match_debug
+
     return highlighted
 
 # Process fact-check when button is clicked
@@ -357,14 +426,21 @@ if submit_button:
 
                 Run a deep research to fact check this text. Identify any misleading information, questionable statements, or missing important information that would confuse the reader.
 
-                IMPORTANT: Respond in English.
-                IMPORTANT: When returning excerpts, you can include or exclude the URLs - the matching will handle both cases.
+                CRITICAL INSTRUCTIONS:
+                1. Respond in English
+                2. For the "excerpt" field: You MUST copy-paste the EXACT text from the original that has the issue. DO NOT write your own summary or commentary.
+                   - CORRECT: "Седемте рилски езера са най-атрактивни за посещение"
+                   - WRONG: "В текста има множество линкове" (this is commentary, not from the original)
+                   - WRONG: "Текстът съдържа" (this is your observation, not from the original)
+                   - WRONG: "Липсва контекст" (this describes what's missing, not what's there)
+                3. If information is MISSING (incomplete), you can describe what's missing in the "issue" field, but leave "excerpt" empty or put a relevant sentence that should have more detail.
+                4. Only include issues where you can point to specific problematic text OR identify specific gaps.
 
                 Return your analysis as a JSON object with the following structure:
                 {{
                 "issues": [
                     {{
-                    "excerpt": "exact text from the original that has an issue",
+                    "excerpt": "EXACT TEXT copied from the original (not your summary)",
                     "issue": "explanation of what is wrong, misleading, or missing",
                     "type": "misleading" | "questionable" | "incomplete",
                     "sources": ["URL or source 1", "URL or source 2"]
@@ -390,12 +466,23 @@ if submit_button:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "excerpt": {"type": "string"},
-                                    "issue": {"type": "string"},
-                                    "type": {"type": "string", "enum": ["misleading", "questionable", "incomplete"]},
+                                    "excerpt": {
+                                        "type": "string",
+                                        "description": "Exact verbatim text copied from the original that has an issue (not a summary or commentary)"
+                                    },
+                                    "issue": {
+                                        "type": "string",
+                                        "description": "Explanation of what is wrong, misleading, or missing"
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": ["misleading", "questionable", "incomplete"],
+                                        "description": "Type of issue"
+                                    },
                                     "sources": {
                                         "type": "array",
-                                        "items": {"type": "string"}
+                                        "items": {"type": "string"},
+                                        "description": "URLs or sources used to verify"
                                     }
                                 },
                                 "required": ["excerpt", "issue", "type", "sources"],
@@ -404,7 +491,8 @@ if submit_button:
                         },
                         "all_sources": {
                             "type": "array",
-                            "items": {"type": "string"}
+                            "items": {"type": "string"},
+                            "description": "All sources consulted during fact-checking"
                         }
                     },
                     "required": ["issues", "all_sources"],
@@ -761,6 +849,29 @@ if submit_button:
                     st.markdown("### Original Text (Highlighted)")
 
                     highlighted_text = highlight_text(current_text, issues)
+
+                    # Show matching debug info
+                    if 'highlight_debug' in st.session_state:
+                        matched_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == True)
+                        failed_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == False)
+                        total_count = len(st.session_state.highlight_debug)
+
+                        if failed_count > 0:
+                            st.warning(f"⚠️ {failed_count} out of {total_count} issues could not be highlighted because the AI returned commentary instead of exact excerpts from your text.")
+
+                            with st.expander("🔍 Debug: Why some highlights failed", expanded=False):
+                                for debug_item in st.session_state.highlight_debug:
+                                    if debug_item['matched'] == True:
+                                        st.success(f"✅ Issue #{debug_item['index']}: **Matched** using {debug_item.get('method', 'unknown')}")
+                                        st.code(f"Excerpt: {debug_item['excerpt']}", language=None)
+                                    elif debug_item['matched'] == 'N/A':
+                                        st.info(f"ℹ️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'N/A')}**")
+                                    else:
+                                        st.error(f"❌ Issue #{debug_item['index']}: **Failed** - {debug_item.get('reason', 'unknown')}")
+                                        st.code(f"Excerpt AI returned: {debug_item['excerpt']}", language=None)
+                                        if 'excerpt_stripped' in debug_item:
+                                            st.code(f"Excerpt stripped: {debug_item['excerpt_stripped']}", language=None)
+                                        st.caption("💡 The AI should return EXACT text from your original, not commentary or summaries.")
 
                     # Use components.html with large height and no scrolling
                     html_content = f"""
