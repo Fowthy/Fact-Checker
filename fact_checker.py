@@ -317,67 +317,153 @@ def highlight_text(original_text, issues):
             text_to_highlight = excerpt
             match_method = "Exact match"
         else:
-            # Strategy 2: Match using stripped text
+            # Strategy 2: Match using stripped text and carefully extract with URLs
             excerpt_stripped, _ = build_position_map(excerpt)
 
             # Find in stripped original
             pos = original_stripped.find(excerpt_stripped)
 
-            if pos != -1:
+            if pos != -1 and len(excerpt_stripped) > 0:
                 # Map back to original positions
-                start_in_original = pos_map[pos] if pos < len(pos_map) else 0
-                end_pos_stripped = pos + len(excerpt_stripped)
+                start_in_original = pos_map[pos]
+                end_pos_stripped = min(pos + len(excerpt_stripped), len(pos_map))
 
-                # Find end position in original - need to include any URLs within the range
-                if end_pos_stripped <= len(pos_map):
-                    # Get the position of the last character
+                # Get the end position in original
+                if end_pos_stripped > 0 and end_pos_stripped <= len(pos_map):
                     end_in_original = pos_map[end_pos_stripped - 1] + 1
 
-                    # Now extend to include any URLs that come right after
-                    # Check if there's a URL immediately following
-                    url_match = re.match(r'\s*\(https?://[^\)]+\)', original_text[end_in_original:])
-                    if url_match:
-                        end_in_original += len(url_match.group())
+                    # Extract the text
+                    candidate = original_text[start_in_original:end_in_original]
 
-                    text_to_highlight = original_text[start_in_original:end_in_original]
-                    match_method = "Position mapping"
-            else:
+                    # Verify by stripping and comparing
+                    candidate_stripped, _ = build_position_map(candidate)
+                    if candidate_stripped == excerpt_stripped:
+                        text_to_highlight = candidate
+                        match_method = "Position mapping"
+                    else:
+                        # Try extending to next space or URL to get clean boundary
+                        while end_in_original < len(original_text):
+                            char = original_text[end_in_original]
+                            if char in ' \n\t':
+                                break
+                            # Check if we're at start of URL
+                            if original_text[end_in_original:end_in_original+1] == '(':
+                                url_match = re.match(r'\(https?://[^\)]+\)', original_text[end_in_original:])
+                                if url_match:
+                                    end_in_original += len(url_match.group())
+                                break
+                            end_in_original += 1
+
+                        candidate = original_text[start_in_original:end_in_original]
+                        candidate_stripped, _ = build_position_map(candidate)
+
+                        if candidate_stripped == excerpt_stripped:
+                            text_to_highlight = candidate
+                            match_method = "Position mapping (adjusted)"
+
+            if not text_to_highlight:
                 # Strategy 3: Try fuzzy match with normalized whitespace
                 excerpt_normalized = ' '.join(excerpt_stripped.split())
                 original_normalized = ' '.join(original_stripped.split())
 
                 pos_norm = original_normalized.find(excerpt_normalized)
                 if pos_norm != -1:
-                    # Try to find approximate position
-                    # Count words before position
-                    words_before = len(original_normalized[:pos_norm].split())
-                    words_in_excerpt = len(excerpt_normalized.split())
+                    # Find the position in original text by counting characters
+                    # This is a simpler approach that works with word boundaries
+                    remaining = original_text
+                    char_count = 0
+                    target_chars = pos_norm
 
-                    # Split original by words
-                    original_words = original_text.split()
-                    if words_before + words_in_excerpt <= len(original_words):
-                        text_to_highlight = ' '.join(original_words[words_before:words_before + words_in_excerpt])
+                    # Skip characters until we reach the position
+                    while char_count < target_chars and remaining:
+                        # Skip URLs
+                        url_match = re.match(r'\s*\(https?://[^\)]+\)', remaining)
+                        if url_match:
+                            remaining = remaining[len(url_match.group()):]
+                            continue
+                        # Skip whitespace sequences as single space
+                        ws_match = re.match(r'\s+', remaining)
+                        if ws_match:
+                            remaining = remaining[len(ws_match.group()):]
+                            char_count += 1
+                            continue
+                        # Regular character
+                        remaining = remaining[1:]
+                        char_count += 1
+
+                    # Now extract the excerpt length
+                    start_pos = len(original_text) - len(remaining)
+                    char_count = 0
+                    target_chars = len(excerpt_normalized)
+
+                    while char_count < target_chars and remaining:
+                        # Include URLs
+                        url_match = re.match(r'\s*\(https?://[^\)]+\)', remaining)
+                        if url_match:
+                            remaining = remaining[len(url_match.group()):]
+                            continue
+                        # Treat whitespace as single space
+                        ws_match = re.match(r'\s+', remaining)
+                        if ws_match:
+                            remaining = remaining[len(ws_match.group()):]
+                            char_count += 1
+                            continue
+                        # Regular character
+                        remaining = remaining[1:]
+                        char_count += 1
+
+                    end_pos = len(original_text) - len(remaining)
+                    candidate = original_text[start_pos:end_pos]
+
+                    # Verify
+                    candidate_stripped, _ = build_position_map(candidate)
+                    candidate_normalized = ' '.join(candidate_stripped.split())
+                    if candidate_normalized == excerpt_normalized:
+                        text_to_highlight = candidate
                         match_method = "Fuzzy word match"
 
         # If we found something to highlight, add it
-        if text_to_highlight and text_to_highlight in highlighted:
-            # Create a unique placeholder
-            placeholder = f"___HIGHLIGHT_{i}___"
-            replacements.append((placeholder, text_to_highlight, color, i, explanation, sources))
-            highlighted = highlighted.replace(text_to_highlight, placeholder, 1)
-            match_debug.append({
-                'index': i,
-                'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
-                'matched': True,
-                'method': match_method,
-                'highlighted_text': text_to_highlight[:50] + '...' if len(text_to_highlight) > 50 else text_to_highlight
-            })
+        if text_to_highlight:
+            # Verify the text is in highlighted
+            if text_to_highlight in highlighted:
+                # Create a unique placeholder
+                placeholder = f"___HIGHLIGHT_{i}___"
+                replacements.append((placeholder, text_to_highlight, color, i, explanation, sources))
+                highlighted = highlighted.replace(text_to_highlight, placeholder, 1)
+                match_debug.append({
+                    'index': i,
+                    'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
+                    'matched': True,
+                    'method': match_method,
+                    'highlighted_text': text_to_highlight[:50] + '...' if len(text_to_highlight) > 50 else text_to_highlight
+                })
+            else:
+                # Check if it's in original_text at least
+                if text_to_highlight in original_text:
+                    # It's in original but not in highlighted = already replaced
+                    match_debug.append({
+                        'index': i,
+                        'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
+                        'matched': 'overlapping',
+                        'reason': 'Overlaps with another highlighted issue',
+                        'text_found': text_to_highlight[:50] + '...' if len(text_to_highlight) > 50 else text_to_highlight
+                    })
+                else:
+                    # Text extraction failed - boundaries don't match
+                    match_debug.append({
+                        'index': i,
+                        'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
+                        'matched': False,
+                        'reason': 'Extracted text boundaries do not match original',
+                        'text_extracted': text_to_highlight[:100] if text_to_highlight else None,
+                        'method_used': match_method
+                    })
         else:
             match_debug.append({
                 'index': i,
                 'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
                 'matched': False,
-                'reason': 'Not found in text' if not text_to_highlight else 'Already replaced',
+                'reason': 'Not found in text',
                 'excerpt_stripped': excerpt_stripped[:50] + '...' if len(excerpt_stripped) > 50 else excerpt_stripped
             })
 
@@ -853,17 +939,28 @@ if submit_button:
                     # Show matching debug info
                     if 'highlight_debug' in st.session_state:
                         matched_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == True)
+                        overlapping_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == 'overlapping')
                         failed_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == False)
                         total_count = len(st.session_state.highlight_debug)
 
-                        if failed_count > 0:
-                            st.warning(f"⚠️ {failed_count} out of {total_count} issues could not be highlighted because the AI returned commentary instead of exact excerpts from your text.")
+                        if overlapping_count > 0 or failed_count > 0:
+                            message_parts = []
+                            if overlapping_count > 0:
+                                message_parts.append(f"{overlapping_count} issue(s) overlap with other highlights")
+                            if failed_count > 0:
+                                message_parts.append(f"{failed_count} issue(s) could not be matched")
 
-                            with st.expander("🔍 Debug: Why some highlights failed", expanded=False):
+                            st.info(f"ℹ️ {matched_count} issues highlighted. " + ", ".join(message_parts) + ". All issues are listed below.")
+
+                            with st.expander("🔍 Debug: Highlight matching details", expanded=False):
                                 for debug_item in st.session_state.highlight_debug:
                                     if debug_item['matched'] == True:
-                                        st.success(f"✅ Issue #{debug_item['index']}: **Matched** using {debug_item.get('method', 'unknown')}")
+                                        st.success(f"✅ Issue #{debug_item['index']}: **Highlighted** using {debug_item.get('method', 'unknown')}")
                                         st.code(f"Excerpt: {debug_item['excerpt']}", language=None)
+                                    elif debug_item['matched'] == 'overlapping':
+                                        st.warning(f"⚠️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'Overlapping')}**")
+                                        st.code(f"Text: {debug_item.get('text_found', debug_item['excerpt'])}", language=None)
+                                        st.caption("💡 This text is already highlighted by another issue. The issue is still listed below.")
                                     elif debug_item['matched'] == 'N/A':
                                         st.info(f"ℹ️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'N/A')}**")
                                     else:
@@ -871,6 +968,9 @@ if submit_button:
                                         st.code(f"Excerpt AI returned: {debug_item['excerpt']}", language=None)
                                         if 'excerpt_stripped' in debug_item:
                                             st.code(f"Excerpt stripped: {debug_item['excerpt_stripped']}", language=None)
+                                        if 'text_extracted' in debug_item and debug_item['text_extracted']:
+                                            st.code(f"Text extracted (bad boundaries): {debug_item['text_extracted']}", language=None)
+                                            st.caption(f"Method: {debug_item.get('method_used', 'unknown')}")
                                         st.caption("💡 The AI should return EXACT text from your original, not commentary or summaries.")
 
                     # Use components.html with large height and no scrolling
@@ -913,6 +1013,8 @@ if submit_button:
                         <mark style="background-color: #fff4cc; padding: 2px 4px; color: #000;">Questionable</mark>
                         <mark style="background-color: #cce5ff; padding: 2px 4px; color: #000;">Incomplete</mark>
                         <br><br>
+                        <b>Status icons:</b> 📍 Highlighted in text above | 🔗 Overlaps with another highlight
+                        <br><br>
                         <small>💡 Hover over highlights to see full explanations and sources. See details below ⬇</small>
                     </div>
                     """, unsafe_allow_html=True)
@@ -924,6 +1026,15 @@ if submit_button:
                         excerpt = issue.get('excerpt', 'N/A')
                         explanation = issue.get('issue', 'No explanation provided')
                         issue_sources = issue.get('sources', [])
+
+                        # Check if this issue was highlighted or overlapping
+                        highlight_status = ""
+                        if 'highlight_debug' in st.session_state and i < len(st.session_state.highlight_debug):
+                            debug_item = st.session_state.highlight_debug[i]
+                            if debug_item.get('matched') == True:
+                                highlight_status = " 📍"  # Highlighted
+                            elif debug_item.get('matched') == 'overlapping':
+                                highlight_status = " 🔗"  # Overlapping with another highlight
 
                         # Color for issue type badge
                         type_colors = {
@@ -946,7 +1057,7 @@ if submit_button:
 
                         st.markdown(f"""
                         <div id="issue-{i}" style="padding: 10px; margin-bottom: 15px; border-left: 3px solid #ccc; background-color: #f9f9f9; color: #000; transition: box-shadow 0.3s;">
-                            <b>{icon} Issue #{i+1}: {issue_type}</b><br>
+                            <b>{icon} Issue #{i+1}: {issue_type}{highlight_status}</b><br>
                             <i style="color: #666;">"{excerpt[:100]}{'...' if len(excerpt) > 100 else ''}"</i><br><br>
                             <div style="color: #000;">{explanation}</div>
                             {sources_html}
