@@ -16,6 +16,10 @@ st.set_page_config(page_title="Fact Checker", page_icon="🔍", layout="wide")
 st.title("🔍 Fact Checker")
 st.write("Enter text below to fact-check it for misleading, questionable, or incomplete information.")
 
+# Initialize session state for text input if not exists
+if 'main_text_input' not in st.session_state:
+    st.session_state.main_text_input = ""
+
 # Sidebar for model configuration
 with st.sidebar:
     st.header("Model Configuration")
@@ -81,15 +85,150 @@ with st.sidebar:
         st.caption(f"Web Search: On ({search_context_size})")
     st.caption(f"Streaming: {'On' if enable_streaming else 'Off'}")
 
-# Text input area
-text_input = st.text_area(
-    "Text to fact-check:",
+st.markdown("### Text to fact-check:")
+st.caption("💡 Paste text from Google Docs below. Links will be automatically preserved.")
+
+# Create a helper component to process paste with links
+paste_helper = """
+<div id="paste-helper" contenteditable="true" style="
+    position: absolute;
+    left: -9999px;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+"></div>
+
+<script>
+// Helper function to parse HTML and extract text with links
+function parseHtmlWithLinks(html) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    function processNode(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent;
+        }
+
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            if (node.tagName === 'A' && node.href) {
+                const linkText = node.textContent;
+                const url = node.href;
+                return `${linkText} (${url})`;
+            }
+
+            if (node.tagName === 'BR') {
+                return '\\n';
+            }
+
+            if (['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI'].includes(node.tagName)) {
+                let text = '';
+                for (let child of node.childNodes) {
+                    text += processNode(child);
+                }
+                return text + '\\n';
+            }
+
+            let text = '';
+            for (let child of node.childNodes) {
+                text += processNode(child);
+            }
+            return text;
+        }
+        return '';
+    }
+
+    let result = processNode(doc.body);
+    result = result.replace(/\\n{3,}/g, '\\n\\n');
+    return result.trim();
+}
+
+// Find Streamlit text areas and add paste handler
+function attachPasteHandler() {
+    const textareas = window.parent.document.querySelectorAll('textarea');
+
+    textareas.forEach(textarea => {
+        // Only attach once
+        if (textarea.dataset.pasteHandlerAttached) return;
+        textarea.dataset.pasteHandlerAttached = 'true';
+
+        textarea.addEventListener('paste', function(e) {
+            const clipboardData = e.clipboardData || window.clipboardData;
+            const htmlData = clipboardData.getData('text/html');
+
+            if (htmlData && htmlData.includes('<a')) {
+                e.preventDefault();
+
+                const processedText = parseHtmlWithLinks(htmlData);
+
+                // Insert at cursor position
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                const currentValue = textarea.value;
+
+                const newValue = currentValue.substring(0, start) + processedText + currentValue.substring(end);
+
+                // Use React's property setter to update value (more reliable than textarea.value = ...)
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype,
+                    'value'
+                ).set;
+                nativeInputValueSetter.call(textarea, newValue);
+
+                // Set cursor position
+                const newPos = start + processedText.length;
+                textarea.selectionStart = newPos;
+                textarea.selectionEnd = newPos;
+
+                // Trigger input event with proper bubbling
+                const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+                textarea.dispatchEvent(inputEvent);
+
+                // Trigger change event
+                const changeEvent = new Event('change', { bubbles: true });
+                textarea.dispatchEvent(changeEvent);
+            }
+        });
+    });
+}
+
+// Attach on load and periodically (for dynamically created textareas)
+attachPasteHandler();
+setInterval(attachPasteHandler, 500);
+</script>
+"""
+
+components.html(paste_helper, height=0)
+
+# Regular text area - JavaScript will enhance it
+st.text_area(
+    "Paste your text here:",
     height=300,
-    placeholder="Paste your text here..."
+    placeholder="Paste your text here (links from Google Docs will be preserved automatically)...",
+    key="main_text_input"
 )
 
+# Fact-check button
+submit_button = st.button("Fact Check", type="primary")
+
+# Debug: Show what's in session state
+with st.expander("🐛 Debug Info", expanded=False):
+    st.write("**Text in session state:**")
+    st.code(st.session_state.main_text_input, language=None)
+    st.write(f"Length: {len(st.session_state.main_text_input)} characters")
+
+def strip_urls(text):
+    """Remove URLs in parentheses from text for AI processing"""
+    import re
+    # Remove URLs in parentheses like (https://example.com)
+    # This pattern matches (http://... or https://...) including complex URLs
+    cleaned = re.sub(r'\s*\(https?://[^\)]+\)', '', text)
+    # Clean up any resulting double spaces
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    return cleaned.strip()
+
 def highlight_text(original_text, issues):
-    """Highlight problematic sections in the text"""
+    """Highlight problematic sections in the text - handles URLs gracefully"""
+    import re
     if not issues:
         return original_text
 
@@ -99,8 +238,32 @@ def highlight_text(original_text, issues):
     highlighted = original_text
     replacements = []
 
+    # Build a mapping from stripped text positions to original text positions
+    def build_position_map(text):
+        """Returns (stripped_text, map_stripped_to_original)"""
+        stripped = []
+        position_map = []  # Maps each char in stripped to position in original
+
+        i = 0
+        while i < len(text):
+            # Check for URL pattern
+            url_match = re.match(r'\s*\(https?://[^\)]+\)', text[i:])
+            if url_match:
+                # Skip URLs in stripped version
+                i += len(url_match.group())
+                continue
+
+            # Add character to stripped version and record its original position
+            stripped.append(text[i])
+            position_map.append(i)
+            i += 1
+
+        return ''.join(stripped), position_map
+
+    original_stripped, pos_map = build_position_map(original_text)
+
     for i, issue in enumerate(sorted_issues):
-        excerpt = issue.get('excerpt', '')
+        excerpt = issue.get('excerpt', '').strip()
         issue_type = issue.get('type', 'questionable')
         explanation = issue.get('issue', 'No explanation')
         sources = issue.get('sources', [])
@@ -113,14 +276,48 @@ def highlight_text(original_text, issues):
         }
         color = colors.get(issue_type, '#fff4cc')
 
-        if excerpt and excerpt in highlighted:
+        if not excerpt:
+            continue
+
+        text_to_highlight = None
+
+        # Strategy 1: Try exact match first (AI included URLs exactly as in original)
+        if excerpt in highlighted:
+            text_to_highlight = excerpt
+        else:
+            # Strategy 2: Match using stripped text
+            excerpt_stripped, _ = build_position_map(excerpt)
+
+            # Find in stripped original
+            pos = original_stripped.find(excerpt_stripped)
+
+            if pos != -1:
+                # Map back to original positions
+                start_in_original = pos_map[pos] if pos < len(pos_map) else 0
+                end_pos_stripped = pos + len(excerpt_stripped)
+
+                # Find end position in original - need to include any URLs within the range
+                if end_pos_stripped <= len(pos_map):
+                    # Get the position of the last character
+                    end_in_original = pos_map[end_pos_stripped - 1] + 1
+
+                    # Now extend to include any URLs that come right after
+                    # Check if there's a URL immediately following
+                    url_match = re.match(r'\s*\(https?://[^\)]+\)', original_text[end_in_original:])
+                    if url_match:
+                        end_in_original += len(url_match.group())
+
+                    text_to_highlight = original_text[start_in_original:end_in_original]
+
+        # If we found something to highlight, add it
+        if text_to_highlight and text_to_highlight in highlighted:
             # Create a unique placeholder
             placeholder = f"___HIGHLIGHT_{i}___"
-            replacements.append((placeholder, excerpt, color, i, explanation, sources))
-            highlighted = highlighted.replace(excerpt, placeholder, 1)
+            replacements.append((placeholder, text_to_highlight, color, i, explanation, sources))
+            highlighted = highlighted.replace(text_to_highlight, placeholder, 1)
 
     # Replace placeholders with HTML
-    for placeholder, excerpt, color, idx, explanation, sources in replacements:
+    for placeholder, excerpt_with_urls, color, idx, explanation, sources in replacements:
         # Escape quotes in explanation for HTML attribute
         escaped_explanation = explanation.replace('"', '&quot;').replace("'", '&#39;')
 
@@ -139,14 +336,16 @@ def highlight_text(original_text, issues):
             class="fact-issue fact-issue-{idx}"
             data-issue-id="issue-{idx}"
             style="background-color: {color}; color: #000; padding: 2px 4px; border-radius: 3px; cursor: help; border: 2px solid transparent; transition: all 0.2s ease;"
-            title="{escaped_tooltip}">{excerpt}</mark>'''
+            title="{escaped_tooltip}">{excerpt_with_urls}</mark>'''
         highlighted = highlighted.replace(placeholder, html_highlight)
 
     return highlighted
 
-# Fact-check button
-if st.button("Fact Check", type="primary"):
-    if not text_input.strip():
+# Process fact-check when button is clicked
+if submit_button:
+    # Use the main_text_input from session state
+    current_text = st.session_state.main_text_input
+    if not current_text.strip():
         st.error("Please enter some text to fact-check.")
     elif not os.getenv("OPENAI_API_KEY"):
         st.error("OpenAI API key not found. Please add OPENAI_API_KEY to your .env file.")
@@ -159,6 +358,7 @@ if st.button("Fact Check", type="primary"):
                 Run a deep research to fact check this text. Identify any misleading information, questionable statements, or missing important information that would confuse the reader.
 
                 IMPORTANT: Respond in English.
+                IMPORTANT: When returning excerpts, you can include or exclude the URLs - the matching will handle both cases.
 
                 Return your analysis as a JSON object with the following structure:
                 {{
@@ -178,7 +378,7 @@ if st.button("Fact Check", type="primary"):
                 If no issues are found, return: {{"issues": [], "all_sources": []}}
 
                 Text to fact-check:
-                {text_input}
+                {current_text}
 """
 
                 # Define JSON schema for structured output
@@ -560,7 +760,7 @@ if st.button("Fact Check", type="primary"):
                     # Original Text (full width)
                     st.markdown("### Original Text (Highlighted)")
 
-                    highlighted_text = highlight_text(text_input, issues)
+                    highlighted_text = highlight_text(current_text, issues)
 
                     # Use components.html with large height and no scrolling
                     html_content = f"""
