@@ -1003,7 +1003,7 @@ if submit_button:
                     </html>
                     """
                     # Use very large height to accommodate any text
-                    components.html(html_content, height=1000, scrolling=True)
+                    components.html(html_content, height=5000, scrolling=True)
 
                     # Legend
                     st.markdown("""
