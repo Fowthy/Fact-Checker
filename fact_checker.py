@@ -486,8 +486,9 @@ def highlight_text(original_text, issues):
             id="highlight-{idx}"
             class="fact-issue fact-issue-{idx}"
             data-issue-id="issue-{idx}"
-            style="background-color: {color}; color: #000; padding: 2px 4px; border-radius: 3px; cursor: help; border: 2px solid transparent; transition: all 0.2s ease;"
-            title="{escaped_tooltip}">{excerpt_with_urls}</mark>'''
+            data-tooltip="{escaped_tooltip}"
+            style="background-color: {color}; color: #000; padding: 2px 4px; border-radius: 3px; cursor: pointer; border: 2px solid transparent; transition: all 0.2s ease;"
+            >{excerpt_with_urls}</mark>'''
         highlighted = highlighted.replace(placeholder, html_highlight)
 
     # Store debug info in session state
@@ -973,7 +974,7 @@ if submit_button:
                                             st.caption(f"Method: {debug_item.get('method_used', 'unknown')}")
                                         st.caption("💡 The AI should return EXACT text from your original, not commentary or summaries.")
 
-                    # Use components.html with large height and no scrolling
+                    # Use components.html with dynamic height
                     html_content = f"""
                     <!DOCTYPE html>
                     <html>
@@ -986,24 +987,128 @@ if submit_button:
                         color: white;
                         margin: 0;
                         padding: 10px;
-                        overflow: hidden;
+                        overflow: visible;
                     }}
                     .fact-issue {{
+                        position: relative;
                         transition: all 0.2s ease;
                     }}
                     .fact-issue:hover {{
                         border: 2px solid #333 !important;
                         box-shadow: 0 2px 8px rgba(0,0,0,0.15);
                     }}
+                    .custom-tooltip {{
+                        position: absolute;
+                        background: #333;
+                        color: white;
+                        padding: 12px;
+                        border-radius: 6px;
+                        z-index: 10000;
+                        max-width: 400px;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                        font-size: 14px;
+                        line-height: 1.5;
+                        white-space: pre-wrap;
+                        word-wrap: break-word;
+                    }}
+                    .custom-tooltip a {{
+                        color: #66b3ff;
+                        text-decoration: underline;
+                    }}
+                    .tooltip-close {{
+                        position: absolute;
+                        top: 6px;
+                        right: 8px;
+                        background: transparent;
+                        border: none;
+                        color: white;
+                        font-size: 20px;
+                        cursor: pointer;
+                        padding: 0;
+                        width: 20px;
+                        height: 20px;
+                        line-height: 20px;
+                        text-align: center;
+                    }}
+                    .tooltip-close:hover {{
+                        color: #ff6666;
+                    }}
                     </style>
                     </head>
                     <body>
                         {highlighted_text}
+                        <script>
+                        let currentTooltip = null;
+
+                        // Add click handlers to all highlights
+                        document.querySelectorAll('.fact-issue').forEach(function(mark) {{
+                            mark.addEventListener('click', function(e) {{
+                                e.stopPropagation();
+
+                                // Remove existing tooltip if any
+                                if (currentTooltip) {{
+                                    currentTooltip.remove();
+                                    currentTooltip = null;
+                                }}
+
+                                // Get tooltip content
+                                const tooltipText = this.getAttribute('data-tooltip');
+                                if (!tooltipText) return;
+
+                                // Create tooltip element
+                                const tooltip = document.createElement('div');
+                                tooltip.className = 'custom-tooltip';
+                                tooltip.innerHTML = tooltipText.replace(/\\n/g, '<br>');
+
+                                // Add close button
+                                const closeBtn = document.createElement('button');
+                                closeBtn.className = 'tooltip-close';
+                                closeBtn.innerHTML = '&times;';
+                                closeBtn.onclick = function(e) {{
+                                    e.stopPropagation();
+                                    tooltip.remove();
+                                    currentTooltip = null;
+                                }};
+                                tooltip.appendChild(closeBtn);
+
+                                // Position tooltip
+                                document.body.appendChild(tooltip);
+                                const rect = this.getBoundingClientRect();
+                                tooltip.style.left = rect.left + 'px';
+                                tooltip.style.top = (rect.bottom + 5) + 'px';
+
+                                // Keep track of current tooltip
+                                currentTooltip = tooltip;
+                            }});
+                        }});
+
+                        // Close tooltip when clicking outside
+                        document.addEventListener('click', function(e) {{
+                            if (currentTooltip && !currentTooltip.contains(e.target)) {{
+                                currentTooltip.remove();
+                                currentTooltip = null;
+                            }}
+                        }});
+
+                        // Auto-resize iframe to fit content
+                        function resizeIframe() {{
+                            const height = document.body.scrollHeight + 20;
+                            window.parent.postMessage({{
+                                type: 'streamlit:setFrameHeight',
+                                height: height
+                            }}, '*');
+                        }}
+
+                        // Resize on load and whenever content changes
+                        window.addEventListener('load', resizeIframe);
+                        setTimeout(resizeIframe, 100);
+                        setTimeout(resizeIframe, 500);
+                        </script>
                     </body>
                     </html>
                     """
-                    # Use very large height to accommodate any text
-                    components.html(html_content, height=5000, scrolling=True)
+                    # Height will be set automatically by JavaScript
+                    components.html(html_content, height=600, scrolling=False)
 
                     # Legend
                     st.markdown("""
@@ -1015,7 +1120,7 @@ if submit_button:
                         <br><br>
                         <b>Status icons:</b> 📍 Highlighted in text above | 🔗 Overlaps with another highlight
                         <br><br>
-                        <small>💡 Hover over highlights to see full explanations and sources. See details below ⬇</small>
+                        <small>💡 Click on highlights to see full explanations and sources. Click the × or outside the tooltip to close. See details below ⬇</small>
                     </div>
                     """, unsafe_allow_html=True)
 
