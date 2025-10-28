@@ -39,7 +39,7 @@ with st.sidebar:
     api_key_input = st.text_input(
         "OpenAI API Key",
         type="password",
-        help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys. Your key is only used for this session and is not stored."
+        help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys"
     )
 
     if api_key_input:
@@ -705,7 +705,7 @@ if submit_button:
                         reasoning_text = ""
                         reasoning_and_search_items = []  # Store all items in order
 
-                        status_placeholder.info("🤔 Model is thinking and analyzing...")
+                        # status_placeholder.info("🤔 Model is thinking and analyzing...")
 
                         for event in response:
                             # Handle different event types
@@ -1010,6 +1010,7 @@ if st.session_state.fact_check_results is not None:
             color: white;
             margin: 0;
             padding: 10px;
+            padding-bottom: 300px;
             overflow: visible;
         }}
         .fact-issue {{
@@ -1050,7 +1051,8 @@ if st.session_state.fact_check_results is not None:
             padding: 12px 28px 12px 12px;
             border-radius: 6px;
             z-index: 10000;
-            max-width: 500px;
+            max-width: 700px;
+            min-width: 400px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.3);
             font-size: 14px;
             line-height: 1.5;
@@ -1086,6 +1088,22 @@ if st.session_state.fact_check_results is not None:
             <script>
             let currentTooltip = null;
 
+            // Function to convert URLs to clickable links
+            function linkifyText(text) {{
+                // Convert URLs to clickable links
+                const urlRegex = /(https?:\\/\\/[^\\s<]+)/g;
+                return text.replace(urlRegex, '<a href="$1" target="_blank" style="color: #66b3ff; text-decoration: underline;">$1</a>');
+            }}
+
+            // Resize iframe dynamically
+            function resizeIframe() {{
+                const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) + 20;
+                window.parent.postMessage({{
+                    type: 'streamlit:setFrameHeight',
+                    height: height
+                }}, '*');
+            }}
+
             // Add click handlers to all highlights
             document.querySelectorAll('.fact-issue').forEach(function(mark) {{
                 mark.addEventListener('click', function(e) {{
@@ -1095,6 +1113,8 @@ if st.session_state.fact_check_results is not None:
                     if (currentTooltip) {{
                         currentTooltip.remove();
                         currentTooltip = null;
+                        // Reset to base padding
+                        document.body.style.paddingBottom = '300px';
                     }}
 
                     // Get tooltip content
@@ -1104,7 +1124,11 @@ if st.session_state.fact_check_results is not None:
                     // Create tooltip element
                     const tooltip = document.createElement('div');
                     tooltip.className = 'custom-tooltip';
-                    tooltip.innerHTML = tooltipText.replace(/\\n/g, '<br>');
+
+                    // Convert newlines to <br> and make URLs clickable
+                    let htmlContent = tooltipText.replace(/\\n/g, '<br>');
+                    htmlContent = linkifyText(htmlContent);
+                    tooltip.innerHTML = htmlContent;
 
                     // Add close button
                     const closeBtn = document.createElement('button');
@@ -1114,17 +1138,58 @@ if st.session_state.fact_check_results is not None:
                         e.stopPropagation();
                         tooltip.remove();
                         currentTooltip = null;
+                        // Reset to base padding and resize
+                        document.body.style.paddingBottom = '300px';
+                        setTimeout(resizeIframe, 10);
                     }};
                     tooltip.appendChild(closeBtn);
 
-                    // Position tooltip
+                    // Position tooltip smartly to avoid going off-screen
                     document.body.appendChild(tooltip);
                     const rect = this.getBoundingClientRect();
-                    tooltip.style.left = rect.left + 'px';
-                    tooltip.style.top = (rect.bottom + 5) + 'px';
+                    const tooltipRect = tooltip.getBoundingClientRect();
+                    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+                    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+
+                    let left = rect.left;
+                    let top = rect.bottom + 5;
+
+                    // Check if tooltip goes off right edge
+                    if (left + tooltipRect.width > viewportWidth) {{
+                        // Position from the right edge
+                        left = viewportWidth - tooltipRect.width - 10;
+                    }}
+
+                    // Make sure it doesn't go off left edge
+                    if (left < 10) {{
+                        left = 10;
+                    }}
+
+                    // Check if tooltip goes off bottom edge
+                    if (top + tooltipRect.height > viewportHeight) {{
+                        // Position above the highlight instead
+                        top = rect.top - tooltipRect.height - 5;
+                    }}
+
+                    // Make sure it doesn't go off top edge
+                    if (top < 10) {{
+                        // If it still doesn't fit, position it below anyway
+                        top = rect.bottom + 5;
+                    }}
+
+                    tooltip.style.left = left + 'px';
+                    tooltip.style.top = top + 'px';
 
                     // Keep track of current tooltip
                     currentTooltip = tooltip;
+
+                    // Wait for tooltip to render, then add padding and resize
+                    setTimeout(function() {{
+                        const tooltipHeight = tooltip.offsetHeight;
+                        // Add generous padding to show the tooltip (tooltip height + large buffer)
+                        document.body.style.paddingBottom = (tooltipHeight + 150) + 'px';
+                        setTimeout(resizeIframe, 10);
+                    }}, 10);
                 }});
             }});
 
@@ -1133,17 +1198,11 @@ if st.session_state.fact_check_results is not None:
                 if (currentTooltip && !currentTooltip.contains(e.target)) {{
                     currentTooltip.remove();
                     currentTooltip = null;
+                    // Reset to base padding and resize
+                    document.body.style.paddingBottom = '300px';
+                    setTimeout(resizeIframe, 10);
                 }}
             }});
-
-            // Auto-resize iframe to fit content
-            function resizeIframe() {{
-                const height = document.body.scrollHeight + 20;
-                window.parent.postMessage({{
-                    type: 'streamlit:setFrameHeight',
-                    height: height
-                }}, '*');
-            }}
 
             // Resize on load and whenever content changes
             window.addEventListener('load', resizeIframe);
@@ -1153,8 +1212,12 @@ if st.session_state.fact_check_results is not None:
         </body>
         </html>
         """
-        # Height will be set automatically by JavaScript
-        components.html(html_content, scrolling=False)
+        # Calculate initial height based on text length with extra space for tooltips
+        # Assume ~80 chars per line, 24px per line, plus generous buffer for tooltips
+        estimated_lines = len(current_text) / 80
+        initial_height = max(400, min(int(estimated_lines * 24) + 400, 3000))
+
+        components.html(html_content, height=initial_height, scrolling=False)
 
         # Legend
         st.markdown("""
