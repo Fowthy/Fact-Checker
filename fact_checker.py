@@ -20,6 +20,10 @@ st.write("Enter text below to fact-check it for misleading, questionable, or inc
 if 'main_text_input' not in st.session_state:
     st.session_state.main_text_input = ""
 
+# Initialize session state for fact-check results
+if 'fact_check_results' not in st.session_state:
+    st.session_state.fact_check_results = None
+
 # Sidebar for model configuration
 with st.sidebar:
     st.header("Model Configuration")
@@ -238,17 +242,33 @@ def strip_urls(text):
     cleaned = re.sub(r'\s+', ' ', cleaned)
     return cleaned.strip()
 
-def highlight_text(original_text, issues):
-    """Highlight problematic sections in the text - handles URLs gracefully"""
+def highlight_text(original_text, issues, show_misleading=True, show_incomplete=True, show_questionable=True):
+    """Highlight problematic sections in the text - handles URLs gracefully and overlapping highlights"""
     import re
     if not issues:
         return original_text
 
-    # Sort issues by position in text (longest first to avoid substring issues)
-    sorted_issues = sorted(issues, key=lambda x: len(x.get('excerpt', '')), reverse=True)
+    # Filter issues based on visibility settings, keeping original indices
+    filtered_issues = []
+    for idx, issue in enumerate(issues):
+        issue_type = issue.get('type', 'questionable')
+        if issue_type == 'misleading' and not show_misleading:
+            continue
+        if issue_type == 'incomplete' and not show_incomplete:
+            continue
+        if issue_type == 'questionable' and not show_questionable:
+            continue
+        # Add original index to the issue dict for tracking
+        issue_with_idx = issue.copy()
+        issue_with_idx['_original_index'] = idx
+        filtered_issues.append(issue_with_idx)
 
-    highlighted = original_text
-    replacements = []
+    # If all filtered out, return original
+    if not filtered_issues:
+        return original_text
+
+    # Use filtered issues for highlighting
+    issues = filtered_issues
 
     # Debug info
     match_debug = []
@@ -277,99 +297,107 @@ def highlight_text(original_text, issues):
 
     original_stripped, pos_map = build_position_map(original_text)
 
-    for i, issue in enumerate(sorted_issues):
+    # Color code by type
+    colors = {
+        'misleading': '#ffcccc',  # light red
+        'questionable': '#fff4cc',  # light yellow
+        'incomplete': '#cce5ff'  # light blue
+    }
+
+    border_colors = {
+        'misleading': '#ff0000',  # red
+        'questionable': '#ffa500',  # orange
+        'incomplete': '#0066cc'  # blue
+    }
+
+    # First pass: find all highlight positions in the original text
+    highlight_ranges = []  # List of (start, end, issue_index, issue_data)
+
+    for i, issue in enumerate(issues):
         excerpt = issue.get('excerpt', '').strip()
         issue_type = issue.get('type', 'questionable')
         explanation = issue.get('issue', 'No explanation')
         sources = issue.get('sources', [])
 
-        # Color code by type
-        colors = {
-            'misleading': '#ffcccc',  # light red
-            'questionable': '#fff4cc',  # light yellow
-            'incomplete': '#cce5ff'  # light blue
-        }
-        color = colors.get(issue_type, '#fff4cc')
-
         if not excerpt:
             # For incomplete type issues, empty excerpt is OK - skip highlighting
+            original_idx = issue.get('_original_index', i)
             if issue_type == 'incomplete':
                 match_debug.append({
-                    'index': i,
+                    'index': original_idx,
                     'excerpt': '(empty - incomplete issue)',
                     'matched': 'N/A',
                     'reason': 'Incomplete type - no specific text to highlight'
                 })
             else:
                 match_debug.append({
-                    'index': i,
+                    'index': original_idx,
                     'excerpt': '(empty)',
                     'matched': False,
                     'reason': 'Empty excerpt'
                 })
             continue
 
-        text_to_highlight = None
+        # Find the position in original text
+        start_pos = None
+        end_pos = None
         match_method = None
 
-        # Strategy 1: Try exact match first (AI included URLs exactly as in original)
-        if excerpt in highlighted:
-            text_to_highlight = excerpt
+        # Strategy 1: Try exact match first
+        pos = original_text.find(excerpt)
+        if pos != -1:
+            start_pos = pos
+            end_pos = pos + len(excerpt)
             match_method = "Exact match"
         else:
-            # Strategy 2: Match using stripped text and carefully extract with URLs
+            # Strategy 2: Match using stripped text
             excerpt_stripped, _ = build_position_map(excerpt)
-
-            # Find in stripped original
             pos = original_stripped.find(excerpt_stripped)
 
             if pos != -1 and len(excerpt_stripped) > 0:
                 # Map back to original positions
-                start_in_original = pos_map[pos]
+                start_pos = pos_map[pos]
                 end_pos_stripped = min(pos + len(excerpt_stripped), len(pos_map))
 
-                # Get the end position in original
                 if end_pos_stripped > 0 and end_pos_stripped <= len(pos_map):
-                    end_in_original = pos_map[end_pos_stripped - 1] + 1
+                    end_pos = pos_map[end_pos_stripped - 1] + 1
 
-                    # Extract the text
-                    candidate = original_text[start_in_original:end_in_original]
-
-                    # Verify by stripping and comparing
+                    # Verify the match
+                    candidate = original_text[start_pos:end_pos]
                     candidate_stripped, _ = build_position_map(candidate)
+
                     if candidate_stripped == excerpt_stripped:
-                        text_to_highlight = candidate
                         match_method = "Position mapping"
                     else:
-                        # Try extending to next space or URL to get clean boundary
-                        while end_in_original < len(original_text):
-                            char = original_text[end_in_original]
+                        # Try extending to clean boundary
+                        while end_pos < len(original_text):
+                            char = original_text[end_pos]
                             if char in ' \n\t':
                                 break
-                            # Check if we're at start of URL
-                            if original_text[end_in_original:end_in_original+1] == '(':
-                                url_match = re.match(r'\(https?://[^\)]+\)', original_text[end_in_original:])
+                            if original_text[end_pos:end_pos+1] == '(':
+                                url_match = re.match(r'\(https?://[^\)]+\)', original_text[end_pos:])
                                 if url_match:
-                                    end_in_original += len(url_match.group())
+                                    end_pos += len(url_match.group())
                                 break
-                            end_in_original += 1
+                            end_pos += 1
 
-                        candidate = original_text[start_in_original:end_in_original]
+                        candidate = original_text[start_pos:end_pos]
                         candidate_stripped, _ = build_position_map(candidate)
 
                         if candidate_stripped == excerpt_stripped:
-                            text_to_highlight = candidate
                             match_method = "Position mapping (adjusted)"
+                        else:
+                            start_pos = None
+                            end_pos = None
 
-            if not text_to_highlight:
-                # Strategy 3: Try fuzzy match with normalized whitespace
+            # Strategy 3: Fuzzy match with normalized whitespace
+            if start_pos is None and len(excerpt_stripped) > 0:
                 excerpt_normalized = ' '.join(excerpt_stripped.split())
                 original_normalized = ' '.join(original_stripped.split())
 
                 pos_norm = original_normalized.find(excerpt_normalized)
                 if pos_norm != -1:
                     # Find the position in original text by counting characters
-                    # This is a simpler approach that works with word boundaries
                     remaining = original_text
                     char_count = 0
                     target_chars = pos_norm
@@ -419,86 +447,164 @@ def highlight_text(original_text, issues):
                     candidate_stripped, _ = build_position_map(candidate)
                     candidate_normalized = ' '.join(candidate_stripped.split())
                     if candidate_normalized == excerpt_normalized:
-                        text_to_highlight = candidate
                         match_method = "Fuzzy word match"
+                    else:
+                        start_pos = None
+                        end_pos = None
 
-        # If we found something to highlight, add it
-        if text_to_highlight:
-            # Verify the text is in highlighted
-            if text_to_highlight in highlighted:
-                # Create a unique placeholder
-                placeholder = f"___HIGHLIGHT_{i}___"
-                replacements.append((placeholder, text_to_highlight, color, i, explanation, sources))
-                highlighted = highlighted.replace(text_to_highlight, placeholder, 1)
-                match_debug.append({
-                    'index': i,
-                    'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
-                    'matched': True,
-                    'method': match_method,
-                    'highlighted_text': text_to_highlight[:50] + '...' if len(text_to_highlight) > 50 else text_to_highlight
-                })
-            else:
-                # Check if it's in original_text at least
-                if text_to_highlight in original_text:
-                    # It's in original but not in highlighted = already replaced
-                    match_debug.append({
-                        'index': i,
-                        'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
-                        'matched': 'overlapping',
-                        'reason': 'Overlaps with another highlighted issue',
-                        'text_found': text_to_highlight[:50] + '...' if len(text_to_highlight) > 50 else text_to_highlight
-                    })
-                else:
-                    # Text extraction failed - boundaries don't match
-                    match_debug.append({
-                        'index': i,
-                        'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
-                        'matched': False,
-                        'reason': 'Extracted text boundaries do not match original',
-                        'text_extracted': text_to_highlight[:100] if text_to_highlight else None,
-                        'method_used': match_method
-                    })
-        else:
+        if start_pos is not None and end_pos is not None:
+            # Use original index for issue numbering
+            original_idx = issue.get('_original_index', i)
+            highlight_ranges.append({
+                'start': start_pos,
+                'end': end_pos,
+                'issue_index': original_idx,
+                'issue_type': issue_type,
+                'explanation': explanation,
+                'sources': sources,
+                'excerpt': excerpt
+            })
             match_debug.append({
-                'index': i,
-                'excerpt': excerpt[:50] + '...' if len(excerpt) > 50 else excerpt,
+                'index': original_idx,
+                'excerpt': excerpt[:100] + '...' if len(excerpt) > 100 else excerpt,
+                'matched': True,
+                'method': match_method
+            })
+        else:
+            # Failed to find - provide detailed debug info
+            original_idx = issue.get('_original_index', i)
+            excerpt_stripped_local, _ = build_position_map(excerpt)
+            excerpt_normalized_local = ' '.join(excerpt_stripped_local.split())
+            original_normalized_local = ' '.join(original_stripped.split())
+
+            debug_info = {
+                'index': original_idx,
+                'excerpt': excerpt[:100] + '...' if len(excerpt) > 100 else excerpt,
                 'matched': False,
                 'reason': 'Not found in text',
-                'excerpt_stripped': excerpt_stripped[:50] + '...' if len(excerpt_stripped) > 50 else excerpt_stripped
-            })
+                'excerpt_full_length': len(excerpt),
+                'excerpt_stripped': excerpt_stripped_local[:100] + '...' if len(excerpt_stripped_local) > 100 else excerpt_stripped_local,
+            }
 
-    # Replace placeholders with HTML
-    for placeholder, excerpt_with_urls, color, idx, explanation, sources in replacements:
-        # Escape quotes in explanation for HTML attribute
-        escaped_explanation = explanation.replace('"', '&quot;').replace("'", '&#39;')
+            # Try to find partial match for debugging
+            if len(excerpt_normalized_local) > 20:
+                # Try first 20 chars
+                first_20 = excerpt_normalized_local[:20]
+                if first_20 in original_normalized_local:
+                    debug_info['partial_match'] = f"First 20 chars found in text"
+                else:
+                    debug_info['partial_match'] = f"First 20 chars NOT found"
 
-        # Add sources to tooltip if available
-        tooltip_text = f"Description ⬇\n\n{escaped_explanation}"
-        if sources:
-            tooltip_text += "\n\nSources:\n"
-            for src_idx, src in enumerate(sources, 1):
-                tooltip_text += f"{src_idx}. {src}\n"
+            match_debug.append(debug_info)
 
-        # Escape the full tooltip
-        escaped_tooltip = tooltip_text.replace('"', '&quot;').replace("'", '&#39;')
+    # Sort by start position
+    highlight_ranges.sort(key=lambda x: x['start'])
 
-        html_highlight = f'''<mark
-            id="highlight-{idx}"
-            class="fact-issue fact-issue-{idx}"
-            data-issue-id="issue-{idx}"
-            data-tooltip="{escaped_tooltip}"
-            style="background-color: {color}; color: #000; padding: 2px 4px; border-radius: 3px; cursor: pointer; border: 2px solid transparent; transition: all 0.2s ease;"
-            >{excerpt_with_urls}</mark>'''
-        highlighted = highlighted.replace(placeholder, html_highlight)
+    # Second pass: build segments with all applicable highlights
+    # Create a map of position -> list of active issues
+    position_issues = {}
+    for hr in highlight_ranges:
+        for pos in range(hr['start'], hr['end']):
+            if pos not in position_issues:
+                position_issues[pos] = []
+            position_issues[pos].append(hr)
+
+    # Build segments where the set of active issues changes
+    segments = []
+    current_pos = 0
+
+    positions = sorted(set([0, len(original_text)] +
+                          [hr['start'] for hr in highlight_ranges] +
+                          [hr['end'] for hr in highlight_ranges]))
+
+    for i in range(len(positions) - 1):
+        start = positions[i]
+        end = positions[i + 1]
+
+        # Get all issues active at this position
+        active_issues = position_issues.get(start, [])
+
+        segments.append({
+            'start': start,
+            'end': end,
+            'text': original_text[start:end],
+            'issues': active_issues
+        })
+
+    # Third pass: build HTML with proper highlighting
+    html_parts = []
+
+    for segment in segments:
+        if not segment['issues']:
+            # No highlight
+            html_parts.append(segment['text'])
+        else:
+            # Has one or more highlights
+            issues_data = segment['issues']
+
+            # Primary issue (first one)
+            primary = issues_data[0]
+            bg_color = colors.get(primary['issue_type'], '#fff4cc')
+
+            # Build tooltip with all issues
+            tooltip_parts = []
+            all_issue_indices = []
+
+            for idx, issue_data in enumerate(issues_data):
+                all_issue_indices.append(str(issue_data['issue_index']))
+
+                tooltip_parts.append(f"Issue #{issue_data['issue_index'] + 1} ({issue_data['issue_type'].title()}):")
+                tooltip_parts.append(issue_data['explanation'])
+
+                if issue_data['sources']:
+                    tooltip_parts.append("\nSources:")
+                    for src_idx, src in enumerate(issue_data['sources'], 1):
+                        tooltip_parts.append(f"{src_idx}. {src}")
+
+                if idx < len(issues_data) - 1:
+                    tooltip_parts.append("\n---\n")
+
+            tooltip_text = "\n".join(tooltip_parts)
+            escaped_tooltip = tooltip_text.replace('"', '&quot;').replace("'", '&#39;')
+
+            # Build border style for multiple issues
+            border_style = "2px solid transparent"
+            if len(issues_data) > 1:
+                # Use border to show additional issues
+                border_colors_list = [border_colors.get(iss['issue_type'], '#333') for iss in issues_data[1:]]
+                if len(border_colors_list) == 1:
+                    border_style = f"2px solid {border_colors_list[0]}"
+                else:
+                    # Multiple borders - use box-shadow to show multiple colors
+                    border_style = f"2px solid {border_colors_list[0]}"
+
+            issue_ids = ','.join(all_issue_indices)
+            # For single issue, show the issue number; for multiple, show count
+            badge_text = str(primary['issue_index'] + 1) if len(issues_data) == 1 else str(len(issues_data))
+            badge_type = "single" if len(issues_data) == 1 else "multiple"
+
+            html_parts.append(f'''<mark
+                class="fact-issue fact-issue-type-{primary['issue_type']}"
+                data-issue-ids="{issue_ids}"
+                data-tooltip="{escaped_tooltip}"
+                data-issue-count="{len(issues_data)}"
+                data-badge-text="{badge_text}"
+                data-badge-type="{badge_type}"
+                data-primary-type="{primary['issue_type']}"
+                style="background-color: {bg_color}; color: #000; padding: 2px 4px; border-radius: 3px; cursor: pointer; border: {border_style}; transition: all 0.2s ease;"
+                >{segment['text']}</mark>''')
 
     # Store debug info in session state
     import streamlit as st
     st.session_state.highlight_debug = match_debug
 
-    return highlighted
+    return ''.join(html_parts)
 
 # Process fact-check when button is clicked
 if submit_button:
+    # Clear previous results when starting new fact-check
+    st.session_state.fact_check_results = None
+
     # Use the main_text_input from session state
     current_text = st.session_state.main_text_input
     if not current_text.strip():
@@ -865,336 +971,383 @@ if submit_button:
 
                 st.success("Fact-check complete!")
 
-                # Display reasoning summary and web searches if available
-                if model_choice.startswith("gpt-5") and 'reasoning_and_search_items' in locals() and reasoning_and_search_items:
-                    with st.expander("🧠 Reasoning Summary & Web Search", expanded=False):
-                        search_counter = 0
-                        for item in reasoning_and_search_items:
-                            if item['type'] == 'reasoning':
-                                # Display reasoning text
-                                st.markdown(item['text'])
-                                st.markdown("")  # Add spacing
-
-                            elif item['type'] == 'web_search':
-                                # Display web search
-                                search_counter += 1
-                                query = item.get('query', '')
-                                sources = item.get('sources', [])
-
-                                st.markdown("---")
-                                if query:
-                                    st.markdown(f"**🔍 Web Search {search_counter}:** {query}")
-                                else:
-                                    st.markdown(f"**🔍 Web Search {search_counter}**")
-
-                                if sources:
-                                    for idx, source in enumerate(sources, 1):
-                                        url = None
-                                        # Handle dict
-                                        if isinstance(source, dict):
-                                            url = source.get('url', '')
-                                        # Handle object with url attribute
-                                        elif hasattr(source, 'url'):
-                                            url = source.url
-                                        # Handle plain string
-                                        else:
-                                            url = str(source)
-
-                                        if url:
-                                            st.markdown(f"{idx}. [{url}]({url})")
-                                        else:
-                                            st.markdown(f"{idx}. (no URL)")
-
-                                st.markdown("")  # Add spacing
-
-                # Display raw API response at the bottom
-                with st.expander("📋 Raw API Response (Debug)", expanded=False):
-                    try:
-                        # Show the actual raw response from OpenAI
-                        if 'response' in locals():
-                            st.write("**Full Response Object:**")
-                            # Convert to dict for display
-                            if hasattr(response, 'model_dump'):
-                                st.json(response.model_dump())
-                            elif hasattr(response, 'dict'):
-                                st.json(response.dict())
-                            else:
-                                st.write(response)
-
-                        st.write("**Extracted Values:**")
-                        st.json({
-                            "model": model_choice,
-                            "reasoning_and_search_items_count": len(reasoning_and_search_items) if 'reasoning_and_search_items' in locals() else 0,
-                            "result_text_length": len(result_text) if result_text else 0,
-                            "parsed_issues_count": len(issues) if issues else 0
-                        })
-                    except Exception as e:
-                        st.error(f"Error displaying response: {e}")
-
-                if issues:
-                    # Original Text (full width)
-                    st.markdown("### Original Text (Highlighted)")
-
-                    highlighted_text = highlight_text(current_text, issues)
-
-                    # Show matching debug info
-                    if 'highlight_debug' in st.session_state:
-                        matched_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == True)
-                        overlapping_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == 'overlapping')
-                        failed_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == False)
-                        total_count = len(st.session_state.highlight_debug)
-
-                        if overlapping_count > 0 or failed_count > 0:
-                            message_parts = []
-                            if overlapping_count > 0:
-                                message_parts.append(f"{overlapping_count} issue(s) overlap with other highlights")
-                            if failed_count > 0:
-                                message_parts.append(f"{failed_count} issue(s) could not be matched")
-
-                            st.info(f"ℹ️ {matched_count} issues highlighted. " + ", ".join(message_parts) + ". All issues are listed below.")
-
-                            with st.expander("🔍 Debug: Highlight matching details", expanded=False):
-                                for debug_item in st.session_state.highlight_debug:
-                                    if debug_item['matched'] == True:
-                                        st.success(f"✅ Issue #{debug_item['index']}: **Highlighted** using {debug_item.get('method', 'unknown')}")
-                                        st.code(f"Excerpt: {debug_item['excerpt']}", language=None)
-                                    elif debug_item['matched'] == 'overlapping':
-                                        st.warning(f"⚠️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'Overlapping')}**")
-                                        st.code(f"Text: {debug_item.get('text_found', debug_item['excerpt'])}", language=None)
-                                        st.caption("💡 This text is already highlighted by another issue. The issue is still listed below.")
-                                    elif debug_item['matched'] == 'N/A':
-                                        st.info(f"ℹ️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'N/A')}**")
-                                    else:
-                                        st.error(f"❌ Issue #{debug_item['index']}: **Failed** - {debug_item.get('reason', 'unknown')}")
-                                        st.code(f"Excerpt AI returned: {debug_item['excerpt']}", language=None)
-                                        if 'excerpt_stripped' in debug_item:
-                                            st.code(f"Excerpt stripped: {debug_item['excerpt_stripped']}", language=None)
-                                        if 'text_extracted' in debug_item and debug_item['text_extracted']:
-                                            st.code(f"Text extracted (bad boundaries): {debug_item['text_extracted']}", language=None)
-                                            st.caption(f"Method: {debug_item.get('method_used', 'unknown')}")
-                                        st.caption("💡 The AI should return EXACT text from your original, not commentary or summaries.")
-
-                    # Use components.html with dynamic height
-                    html_content = f"""
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                    <style>
-                    body {{
-                        font-family: "Source Sans Pro", sans-serif;
-                        font-size: 16px;
-                        line-height: 1.6;
-                        color: white;
-                        margin: 0;
-                        padding: 10px;
-                        overflow: visible;
-                    }}
-                    .fact-issue {{
-                        position: relative;
-                        transition: all 0.2s ease;
-                    }}
-                    .fact-issue:hover {{
-                        border: 2px solid #333 !important;
-                        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-                    }}
-                    .custom-tooltip {{
-                        position: absolute;
-                        background: #333;
-                        color: white;
-                        padding: 12px;
-                        border-radius: 6px;
-                        z-index: 10000;
-                        max-width: 400px;
-                        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-                        font-size: 14px;
-                        line-height: 1.5;
-                        white-space: pre-wrap;
-                        word-wrap: break-word;
-                    }}
-                    .custom-tooltip a {{
-                        color: #66b3ff;
-                        text-decoration: underline;
-                    }}
-                    .tooltip-close {{
-                        position: absolute;
-                        top: 6px;
-                        right: 8px;
-                        background: transparent;
-                        border: none;
-                        color: white;
-                        font-size: 20px;
-                        cursor: pointer;
-                        padding: 0;
-                        width: 20px;
-                        height: 20px;
-                        line-height: 20px;
-                        text-align: center;
-                    }}
-                    .tooltip-close:hover {{
-                        color: #ff6666;
-                    }}
-                    </style>
-                    </head>
-                    <body>
-                        {highlighted_text}
-                        <script>
-                        let currentTooltip = null;
-
-                        // Add click handlers to all highlights
-                        document.querySelectorAll('.fact-issue').forEach(function(mark) {{
-                            mark.addEventListener('click', function(e) {{
-                                e.stopPropagation();
-
-                                // Remove existing tooltip if any
-                                if (currentTooltip) {{
-                                    currentTooltip.remove();
-                                    currentTooltip = null;
-                                }}
-
-                                // Get tooltip content
-                                const tooltipText = this.getAttribute('data-tooltip');
-                                if (!tooltipText) return;
-
-                                // Create tooltip element
-                                const tooltip = document.createElement('div');
-                                tooltip.className = 'custom-tooltip';
-                                tooltip.innerHTML = tooltipText.replace(/\\n/g, '<br>');
-
-                                // Add close button
-                                const closeBtn = document.createElement('button');
-                                closeBtn.className = 'tooltip-close';
-                                closeBtn.innerHTML = '&times;';
-                                closeBtn.onclick = function(e) {{
-                                    e.stopPropagation();
-                                    tooltip.remove();
-                                    currentTooltip = null;
-                                }};
-                                tooltip.appendChild(closeBtn);
-
-                                // Position tooltip
-                                document.body.appendChild(tooltip);
-                                const rect = this.getBoundingClientRect();
-                                tooltip.style.left = rect.left + 'px';
-                                tooltip.style.top = (rect.bottom + 5) + 'px';
-
-                                // Keep track of current tooltip
-                                currentTooltip = tooltip;
-                            }});
-                        }});
-
-                        // Close tooltip when clicking outside
-                        document.addEventListener('click', function(e) {{
-                            if (currentTooltip && !currentTooltip.contains(e.target)) {{
-                                currentTooltip.remove();
-                                currentTooltip = null;
-                            }}
-                        }});
-
-                        // Auto-resize iframe to fit content
-                        function resizeIframe() {{
-                            const height = document.body.scrollHeight + 20;
-                            window.parent.postMessage({{
-                                type: 'streamlit:setFrameHeight',
-                                height: height
-                            }}, '*');
-                        }}
-
-                        // Resize on load and whenever content changes
-                        window.addEventListener('load', resizeIframe);
-                        setTimeout(resizeIframe, 100);
-                        setTimeout(resizeIframe, 500);
-                        </script>
-                    </body>
-                    </html>
-                    """
-                    # Height will be set automatically by JavaScript
-                    components.html(html_content, height=600, scrolling=False)
-
-                    # Legend
-                    st.markdown("""
-                    <div style="margin-top: 20px; margin-bottom: 30px; padding: 10px; background-color: #f0f0f0; border-radius: 5px; color: #000;">
-                        <b>Legend:</b><br>
-                        <mark style="background-color: #ffcccc; padding: 2px 4px; color: #000;">Misleading</mark>
-                        <mark style="background-color: #fff4cc; padding: 2px 4px; color: #000;">Questionable</mark>
-                        <mark style="background-color: #cce5ff; padding: 2px 4px; color: #000;">Incomplete</mark>
-                        <br><br>
-                        <b>Status icons:</b> 📍 Highlighted in text above | 🔗 Overlaps with another highlight
-                        <br><br>
-                        <small>💡 Click on highlights to see full explanations and sources. Click the × or outside the tooltip to close. See details below ⬇</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    # Issues section (full width below)
-                    st.markdown("### Issues Found")
-                    for i, issue in enumerate(issues):
-                        issue_type = issue.get('type', 'questionable').title()
-                        excerpt = issue.get('excerpt', 'N/A')
-                        explanation = issue.get('issue', 'No explanation provided')
-                        issue_sources = issue.get('sources', [])
-
-                        # Check if this issue was highlighted or overlapping
-                        highlight_status = ""
-                        if 'highlight_debug' in st.session_state and i < len(st.session_state.highlight_debug):
-                            debug_item = st.session_state.highlight_debug[i]
-                            if debug_item.get('matched') == True:
-                                highlight_status = " 📍"  # Highlighted
-                            elif debug_item.get('matched') == 'overlapping':
-                                highlight_status = " 🔗"  # Overlapping with another highlight
-
-                        # Color for issue type badge
-                        type_colors = {
-                            'Misleading': '🔴',
-                            'Questionable': '🟡',
-                            'Incomplete': '🔵'
-                        }
-                        icon = type_colors.get(issue_type, '⚪')
-
-                        # Build sources HTML
-                        sources_html = ""
-                        if issue_sources:
-                            sources_html = "<br><br><b>Sources:</b><br>"
-                            for idx, src in enumerate(issue_sources, 1):
-                                # Make URLs clickable
-                                if src.startswith('http'):
-                                    sources_html += f'{idx}. <a href="{src}" target="_blank" style="color: #0066cc;">{src}</a><br>'
-                                else:
-                                    sources_html += f'{idx}. {src}<br>'
-
-                        st.markdown(f"""
-                        <div id="issue-{i}" style="padding: 10px; margin-bottom: 15px; border-left: 3px solid #ccc; background-color: #f9f9f9; color: #000; transition: box-shadow 0.3s;">
-                            <b>{icon} Issue #{i+1}: {issue_type}{highlight_status}</b><br>
-                            <i style="color: #666;">"{excerpt[:100]}{'...' if len(excerpt) > 100 else ''}"</i><br><br>
-                            <div style="color: #000;">{explanation}</div>
-                            {sources_html}
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                    # Display all sources section
-                    if all_sources:
-                        st.markdown("---")
-                        st.markdown("### 📚 All Sources Used")
-                        for idx, source in enumerate(all_sources, 1):
-                            # Make URLs clickable
-                            if source.startswith('http'):
-                                st.markdown(f"{idx}. [{source}]({source})")
-                            else:
-                                st.markdown(f"{idx}. {source}")
-                else:
-                    st.success("✅ No issues found! The text appears to be accurate and complete.")
-
-                    # Still show sources if available even when no issues found
-                    if 'all_sources' in locals() and all_sources:
-                        st.markdown("---")
-                        st.markdown("### 📚 Sources Consulted")
-                        for idx, source in enumerate(all_sources, 1):
-                            # Make URLs clickable
-                            if source.startswith('http'):
-                                st.markdown(f"{idx}. [{source}]({source})")
-                            else:
-                                st.markdown(f"{idx}. {source}")
+                # Store results in session state for persistence across reruns
+                st.session_state.fact_check_results = {
+                    'issues': issues,
+                    'all_sources': all_sources,
+                    'current_text': current_text,
+                    'model_choice': model_choice,
+                    'reasoning_and_search_items': reasoning_and_search_items if 'reasoning_and_search_items' in locals() else []
+                }
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 import traceback
                 with st.expander("Show error details"):
                     st.code(traceback.format_exc())
+
+# Display results from session state (persists across reruns)
+if st.session_state.fact_check_results is not None:
+    results = st.session_state.fact_check_results
+    issues = results['issues']
+    all_sources = results['all_sources']
+    current_text = results['current_text']
+    model_choice = results['model_choice']
+    reasoning_and_search_items = results['reasoning_and_search_items']
+
+    # Display reasoning summary and web searches if available
+    if model_choice.startswith("gpt-5") and reasoning_and_search_items:
+        with st.expander("🧠 Reasoning Summary & Web Search", expanded=False):
+            search_counter = 0
+            for item in reasoning_and_search_items:
+                if item['type'] == 'reasoning':
+                    # Display reasoning text
+                    st.markdown(item['text'])
+                    st.markdown("")  # Add spacing
+
+                elif item['type'] == 'web_search':
+                    # Display web search
+                    search_counter += 1
+                    query = item.get('query', '')
+                    sources = item.get('sources', [])
+
+                    st.markdown("---")
+                    if query:
+                        st.markdown(f"**🔍 Web Search {search_counter}:** {query}")
+                    else:
+                        st.markdown(f"**🔍 Web Search {search_counter}**")
+
+                    if sources:
+                        for idx, source in enumerate(sources, 1):
+                            url = None
+                            # Handle dict
+                            if isinstance(source, dict):
+                                url = source.get('url', '')
+                            # Handle object with url attribute
+                            elif hasattr(source, 'url'):
+                                url = source.url
+                            # Handle plain string
+                            else:
+                                url = str(source)
+
+                            if url:
+                                st.markdown(f"{idx}. [{url}]({url})")
+                            else:
+                                st.markdown(f"{idx}. (no URL)")
+
+                    st.markdown("")  # Add spacing
+
+    if issues:
+        # Filter controls (define before using them)
+        st.markdown("### Highlighted Text")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            show_misleading = st.checkbox("🔴 Show Misleading", value=True, key="filter_misleading")
+        with col2:
+            show_incomplete = st.checkbox("🔵 Show Incomplete", value=True, key="filter_incomplete")
+        with col3:
+            show_questionable = st.checkbox("🟡 Show Questionable", value=True, key="filter_questionable")
+
+        # Generate highlighted text with filters applied
+        highlighted_text = highlight_text(current_text, issues, show_misleading, show_incomplete, show_questionable)
+
+        # Show matching debug info
+        if 'highlight_debug' in st.session_state:
+            matched_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == True)
+            overlapping_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == 'overlapping')
+            failed_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == False)
+            total_count = len(st.session_state.highlight_debug)
+
+            if overlapping_count > 0 or failed_count > 0:
+                message_parts = []
+                if overlapping_count > 0:
+                    message_parts.append(f"{overlapping_count} issue(s) overlap with other highlights")
+                if failed_count > 0:
+                    message_parts.append(f"{failed_count} issue(s) could not be matched")
+
+                st.info(f"ℹ️ {matched_count} issues highlighted. " + ", ".join(message_parts) + ". All issues are listed below.")
+
+                with st.expander("🔍 Debug: Highlight matching details", expanded=False):
+                    for debug_item in st.session_state.highlight_debug:
+                        if debug_item['matched'] == True:
+                            st.success(f"✅ Issue #{debug_item['index']}: **Highlighted** using {debug_item.get('method', 'unknown')}")
+                            st.code(f"Excerpt: {debug_item['excerpt']}", language=None)
+                        elif debug_item['matched'] == 'overlapping':
+                            st.warning(f"⚠️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'Overlapping')}**")
+                            st.code(f"Text: {debug_item.get('text_found', debug_item['excerpt'])}", language=None)
+                            st.caption("💡 This text is already highlighted by another issue. The issue is still listed below.")
+                        elif debug_item['matched'] == 'N/A':
+                            st.info(f"ℹ️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'N/A')}**")
+                        else:
+                            st.error(f"❌ Issue #{debug_item['index']}: **Failed** - {debug_item.get('reason', 'unknown')}")
+                            st.code(f"Excerpt AI returned ({debug_item.get('excerpt_full_length', 'unknown')} chars): {debug_item['excerpt']}", language=None)
+                            if 'excerpt_stripped' in debug_item:
+                                st.code(f"Excerpt stripped: {debug_item['excerpt_stripped']}", language=None)
+                            if 'partial_match' in debug_item:
+                                st.caption(f"🔍 {debug_item['partial_match']}")
+                            if 'text_extracted' in debug_item and debug_item['text_extracted']:
+                                st.code(f"Text extracted (bad boundaries): {debug_item['text_extracted']}", language=None)
+                                st.caption(f"Method: {debug_item.get('method_used', 'unknown')}")
+                            st.caption("💡 The AI should return EXACT text from your original, not commentary or summaries.")
+
+        # Use components.html with dynamic height
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+        body {{
+            font-family: "Source Sans Pro", sans-serif;
+            font-size: 16px;
+            line-height: 1.6;
+            color: white;
+            margin: 0;
+            padding: 10px;
+            overflow: visible;
+        }}
+        .fact-issue {{
+            position: relative;
+            transition: all 0.2s ease;
+        }}
+        .fact-issue:hover {{
+            border-width: 3px !important;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }}
+        .fact-issue::after {{
+            content: attr(data-badge-text);
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            color: white;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 11px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid white;
+            z-index: 100;
+        }}
+        .fact-issue[data-badge-type="single"]::after {{
+            background: #666;
+        }}
+        .fact-issue[data-badge-type="multiple"]::after {{
+            background: #ff6600;
+        }}
+        .custom-tooltip {{
+            position: absolute;
+            background: #333;
+            color: white;
+            padding: 12px 28px 12px 12px;
+            border-radius: 6px;
+            z-index: 10000;
+            max-width: 500px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            font-size: 14px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+        .custom-tooltip a {{
+            color: #66b3ff;
+            text-decoration: underline;
+        }}
+        .tooltip-close {{
+            position: absolute;
+            top: 6px;
+            right: 8px;
+            background: transparent;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0;
+            width: 20px;
+            height: 20px;
+            line-height: 20px;
+            text-align: center;
+        }}
+        .tooltip-close:hover {{
+            color: #ff6666;
+        }}
+        </style>
+        </head>
+        <body>
+            {highlighted_text}
+            <script>
+            let currentTooltip = null;
+
+            // Add click handlers to all highlights
+            document.querySelectorAll('.fact-issue').forEach(function(mark) {{
+                mark.addEventListener('click', function(e) {{
+                    e.stopPropagation();
+
+                    // Remove existing tooltip if any
+                    if (currentTooltip) {{
+                        currentTooltip.remove();
+                        currentTooltip = null;
+                    }}
+
+                    // Get tooltip content
+                    const tooltipText = this.getAttribute('data-tooltip');
+                    if (!tooltipText) return;
+
+                    // Create tooltip element
+                    const tooltip = document.createElement('div');
+                    tooltip.className = 'custom-tooltip';
+                    tooltip.innerHTML = tooltipText.replace(/\\n/g, '<br>');
+
+                    // Add close button
+                    const closeBtn = document.createElement('button');
+                    closeBtn.className = 'tooltip-close';
+                    closeBtn.innerHTML = '&times;';
+                    closeBtn.onclick = function(e) {{
+                        e.stopPropagation();
+                        tooltip.remove();
+                        currentTooltip = null;
+                    }};
+                    tooltip.appendChild(closeBtn);
+
+                    // Position tooltip
+                    document.body.appendChild(tooltip);
+                    const rect = this.getBoundingClientRect();
+                    tooltip.style.left = rect.left + 'px';
+                    tooltip.style.top = (rect.bottom + 5) + 'px';
+
+                    // Keep track of current tooltip
+                    currentTooltip = tooltip;
+                }});
+            }});
+
+            // Close tooltip when clicking outside
+            document.addEventListener('click', function(e) {{
+                if (currentTooltip && !currentTooltip.contains(e.target)) {{
+                    currentTooltip.remove();
+                    currentTooltip = null;
+                }}
+            }});
+
+            // Auto-resize iframe to fit content
+            function resizeIframe() {{
+                const height = document.body.scrollHeight + 20;
+                window.parent.postMessage({{
+                    type: 'streamlit:setFrameHeight',
+                    height: height
+                }}, '*');
+            }}
+
+            // Resize on load and whenever content changes
+            window.addEventListener('load', resizeIframe);
+            setTimeout(resizeIframe, 100);
+            setTimeout(resizeIframe, 500);
+            </script>
+        </body>
+        </html>
+        """
+        # Height will be set automatically by JavaScript
+        components.html(html_content, scrolling=False)
+
+        # Legend
+        st.markdown("""
+        <div style="margin-top: 20px; margin-bottom: 30px; padding: 10px; background-color: #f0f0f0; border-radius: 5px; color: #000;">
+            <b>Legend:</b><br>
+            <mark style="background-color: #ffcccc; padding: 2px 4px; color: #000;">Misleading</mark>
+            <mark style="background-color: #fff4cc; padding: 2px 4px; color: #000;">Questionable</mark>
+            <mark style="background-color: #cce5ff; padding: 2px 4px; color: #000;">Incomplete</mark>
+            <br><br>
+            <b>Issue badges:</b> Each highlight shows a number badge:
+            <ul style="margin: 5px 0; padding-left: 20px;">
+                <li><span style="background: #666; color: white; border-radius: 50%; padding: 2px 6px; font-size: 11px; font-weight: bold;">3</span> = Issue #3 (single issue)</li>
+                <li><span style="background: #ff6600; color: white; border-radius: 50%; padding: 2px 6px; font-size: 11px; font-weight: bold;">2</span> = 2 overlapping issues (click to see all)</li>
+            </ul>
+            <b>Status icons in issue cards:</b> 📍 Highlighted in text above | 🔗 Overlaps with another highlight
+            <br><br>
+            <small>💡 Click on highlights to see full explanations and sources. Click the × or outside the tooltip to close. See details below ⬇</small>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Issues section (full width below) - reordered by type
+        st.markdown("### Issues Found")
+
+        # Reorder issues by type: misleading, incomplete, questionable
+        type_order = {'misleading': 0, 'incomplete': 1, 'questionable': 2}
+        sorted_issues = sorted(enumerate(issues), key=lambda x: type_order.get(x[1].get('type', 'questionable'), 3))
+
+        for original_index, issue in sorted_issues:
+            issue_type = issue.get('type', 'questionable').title()
+            issue_type_lower = issue.get('type', 'questionable')
+
+            # Apply filter
+            if issue_type_lower == 'misleading' and not show_misleading:
+                continue
+            if issue_type_lower == 'incomplete' and not show_incomplete:
+                continue
+            if issue_type_lower == 'questionable' and not show_questionable:
+                continue
+
+            excerpt = issue.get('excerpt', 'N/A')
+            explanation = issue.get('issue', 'No explanation provided')
+            issue_sources = issue.get('sources', [])
+
+            # Check if this issue was highlighted or overlapping
+            highlight_status = ""
+            if 'highlight_debug' in st.session_state and original_index < len(st.session_state.highlight_debug):
+                debug_item = st.session_state.highlight_debug[original_index]
+                if debug_item.get('matched') == True:
+                    highlight_status = " 📍"  # Highlighted
+                elif debug_item.get('matched') == 'overlapping':
+                    highlight_status = " 🔗"  # Overlapping with another highlight
+
+            # Color for issue type badge
+            type_colors = {
+                'Misleading': '🔴',
+                'Questionable': '🟡',
+                'Incomplete': '🔵'
+            }
+            icon = type_colors.get(issue_type, '⚪')
+
+            # Build sources HTML
+            sources_html = ""
+            if issue_sources:
+                sources_html = "<br><br><b>Sources:</b><br>"
+                for idx, src in enumerate(issue_sources, 1):
+                    # Make URLs clickable
+                    if src.startswith('http'):
+                        sources_html += f'{idx}. <a href="{src}" target="_blank" style="color: #0066cc;">{src}</a><br>'
+                    else:
+                        sources_html += f'{idx}. {src}<br>'
+
+            st.markdown(f"""
+            <div id="issue-{original_index}" style="padding: 10px; margin-bottom: 15px; border-left: 3px solid #ccc; background-color: #f9f9f9; color: #000; transition: box-shadow 0.3s;">
+                <b>{icon} Issue #{original_index+1}: {issue_type}{highlight_status}</b><br>
+                <i style="color: #666;">"{excerpt[:100]}{'...' if len(excerpt) > 100 else ''}"</i><br><br>
+                <div style="color: #000;">{explanation}</div>
+                {sources_html}
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Display all sources section
+        if all_sources:
+            st.markdown("---")
+            st.markdown("### 📚 All Sources Used")
+            for idx, source in enumerate(all_sources, 1):
+                # Make URLs clickable
+                if source.startswith('http'):
+                    st.markdown(f"{idx}. [{source}]({source})")
+                else:
+                    st.markdown(f"{idx}. {source}")
+    else:
+        st.success("✅ No issues found! The text appears to be accurate and complete.")
+
+        # Still show sources if available even when no issues found
+        if all_sources:
+            st.markdown("---")
+            st.markdown("### 📚 Sources Consulted")
+            for idx, source in enumerate(all_sources, 1):
+                # Make URLs clickable
+                if source.startswith('http'):
+                    st.markdown(f"{idx}. [{source}]({source})")
+                else:
+                    st.markdown(f"{idx}. {source}")
