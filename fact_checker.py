@@ -24,70 +24,32 @@ if 'main_text_input' not in st.session_state:
 if 'fact_check_results' not in st.session_state:
     st.session_state.fact_check_results = None
 
-# Sidebar for model configuration
+# Hardcoded model configuration
+model_choice = "gpt-5"
+reasoning_effort = "high"
+verbosity = "medium"
+enable_web_search = True
+search_context_size = "medium"
+enable_streaming = True
+
+# Sidebar for API key
 with st.sidebar:
-    st.header("Model Configuration")
+    st.header("Configuration")
 
-    # Model selection
-    model_choice = st.selectbox(
-        "Select Model",
-        ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-search-api", "gpt-4o"],
-        index=0,
-        help="GPT-5 models with reasoning capabilities. Use gpt-5-search-api for web search integration."
+    api_key_input = st.text_input(
+        "OpenAI API Key",
+        type="password",
+        help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys. Your key is only used for this session and is not stored."
     )
 
-    # Reasoning effort (for GPT-5 models)
-    if model_choice.startswith("gpt-5"):
-        reasoning_effort = st.selectbox(
-            "Reasoning Effort",
-            ["high", "medium", "low", "minimal"],
-            index=0,
-            help="Higher reasoning effort = more thorough analysis but slower response"
-        )
-
-        # Verbosity
-        verbosity = st.selectbox(
-            "Response Verbosity",
-            ["medium", "high", "low"],
-            index=0,
-            help="Controls how detailed the explanations are"
-        )
-
-        # Web search option (for GPT-5 models)
-        enable_web_search = st.checkbox(
-            "Enable Web Search",
-            value=True,
-            help="Allow the model to search the web for fact-checking"
-        )
-
-        if enable_web_search:
-            search_context_size = st.selectbox(
-                "Search Context Size",
-                ["low", "medium", "high"],
-                index=1,
-                help="Amount of web search context to include"
-            )
-    else:
-        reasoning_effort = None
-        verbosity = None
-        enable_web_search = False
-
-    # Streaming option
-    enable_streaming = st.checkbox(
-        "Enable Streaming",
-        value=True,
-        help="Show live responses as the model generates them"
-    )
+    if api_key_input:
+        os.environ["OPENAI_API_KEY"] = api_key_input
+        st.success("✅ API Key set")
 
     st.divider()
-    st.caption(f"Model: {model_choice}")
-    if reasoning_effort:
-        st.caption(f"Reasoning: {reasoning_effort}")
-    if verbosity:
-        st.caption(f"Verbosity: {verbosity}")
-    if model_choice.startswith("gpt-5") and enable_web_search:
-        st.caption(f"Web Search: On ({search_context_size})")
-    st.caption(f"Streaming: {'On' if enable_streaming else 'Off'}")
+    st.caption("Model: gpt-5")
+    st.caption("Reasoning: high")
+    st.caption("Web Search: enabled")
 
 st.markdown("### Text to fact-check:")
 st.caption("💡 Paste text from Google Docs below. Links will be automatically preserved.")
@@ -214,23 +176,6 @@ st.text_area(
 # Fact-check button
 submit_button = st.button("Fact Check", type="primary")
 
-# Debug: Show what's in session state
-with st.expander("🐛 Debug Info", expanded=False):
-    st.write("**Text in session state:**")
-    st.code(st.session_state.main_text_input, language=None)
-    st.write(f"Length: {len(st.session_state.main_text_input)} characters")
-
-    # Show URL formatting
-    import re
-    urls_found = re.findall(r'\(https?://[^\)]+\)', st.session_state.main_text_input)
-    if urls_found:
-        st.write(f"**URLs found in text:** {len(urls_found)}")
-        for idx, url in enumerate(urls_found[:5], 1):  # Show first 5
-            st.code(url, language=None)
-        if len(urls_found) > 5:
-            st.write(f"... and {len(urls_found) - 5} more")
-    else:
-        st.write("**No URLs found in text**")
 
 def strip_urls(text):
     """Remove URLs in parentheses from text for AI processing"""
@@ -1051,44 +996,6 @@ if st.session_state.fact_check_results is not None:
         # Generate highlighted text with filters applied
         highlighted_text = highlight_text(current_text, issues, show_misleading, show_incomplete, show_questionable)
 
-        # Show matching debug info
-        if 'highlight_debug' in st.session_state:
-            matched_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == True)
-            overlapping_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == 'overlapping')
-            failed_count = sum(1 for d in st.session_state.highlight_debug if d['matched'] == False)
-            total_count = len(st.session_state.highlight_debug)
-
-            if overlapping_count > 0 or failed_count > 0:
-                message_parts = []
-                if overlapping_count > 0:
-                    message_parts.append(f"{overlapping_count} issue(s) overlap with other highlights")
-                if failed_count > 0:
-                    message_parts.append(f"{failed_count} issue(s) could not be matched")
-
-                st.info(f"ℹ️ {matched_count} issues highlighted. " + ", ".join(message_parts) + ". All issues are listed below.")
-
-                with st.expander("🔍 Debug: Highlight matching details", expanded=False):
-                    for debug_item in st.session_state.highlight_debug:
-                        if debug_item['matched'] == True:
-                            st.success(f"✅ Issue #{debug_item['index']}: **Highlighted** using {debug_item.get('method', 'unknown')}")
-                            st.code(f"Excerpt: {debug_item['excerpt']}", language=None)
-                        elif debug_item['matched'] == 'overlapping':
-                            st.warning(f"⚠️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'Overlapping')}**")
-                            st.code(f"Text: {debug_item.get('text_found', debug_item['excerpt'])}", language=None)
-                            st.caption("💡 This text is already highlighted by another issue. The issue is still listed below.")
-                        elif debug_item['matched'] == 'N/A':
-                            st.info(f"ℹ️ Issue #{debug_item['index']}: **{debug_item.get('reason', 'N/A')}**")
-                        else:
-                            st.error(f"❌ Issue #{debug_item['index']}: **Failed** - {debug_item.get('reason', 'unknown')}")
-                            st.code(f"Excerpt AI returned ({debug_item.get('excerpt_full_length', 'unknown')} chars): {debug_item['excerpt']}", language=None)
-                            if 'excerpt_stripped' in debug_item:
-                                st.code(f"Excerpt stripped: {debug_item['excerpt_stripped']}", language=None)
-                            if 'partial_match' in debug_item:
-                                st.caption(f"🔍 {debug_item['partial_match']}")
-                            if 'text_extracted' in debug_item and debug_item['text_extracted']:
-                                st.code(f"Text extracted (bad boundaries): {debug_item['text_extracted']}", language=None)
-                                st.caption(f"Method: {debug_item.get('method_used', 'unknown')}")
-                            st.caption("💡 The AI should return EXACT text from your original, not commentary or summaries.")
 
         # Use components.html with dynamic height
         html_content = f"""
@@ -1257,14 +1164,12 @@ if st.session_state.fact_check_results is not None:
             <mark style="background-color: #fff4cc; padding: 2px 4px; color: #000;">Questionable</mark>
             <mark style="background-color: #cce5ff; padding: 2px 4px; color: #000;">Incomplete</mark>
             <br><br>
-            <b>Issue badges:</b> Each highlight shows a number badge:
+            <b>Issue badges:</b> Each highlight shows a number badge
             <ul style="margin: 5px 0; padding-left: 20px;">
-                <li><span style="background: #666; color: white; border-radius: 50%; padding: 2px 6px; font-size: 11px; font-weight: bold;">3</span> = Issue #3 (single issue)</li>
-                <li><span style="background: #ff6600; color: white; border-radius: 50%; padding: 2px 6px; font-size: 11px; font-weight: bold;">2</span> = 2 overlapping issues (click to see all)</li>
+                <li><span style="background: #666; color: white; border-radius: 50%; padding: 2px 6px; font-size: 11px; font-weight: bold;">3</span> = Issue #3</li>
+                <li><span style="background: #ff6600; color: white; border-radius: 50%; padding: 2px 6px; font-size: 11px; font-weight: bold;">2</span> = Multiple overlapping issues</li>
             </ul>
-            <b>Status icons in issue cards:</b> 📍 Highlighted in text above | 🔗 Overlaps with another highlight
-            <br><br>
-            <small>💡 Click on highlights to see full explanations and sources. Click the × or outside the tooltip to close. See details below ⬇</small>
+            <small>💡 Click on highlighted text to see full explanations and sources. Click the × or outside the tooltip to close.</small>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1291,15 +1196,6 @@ if st.session_state.fact_check_results is not None:
             explanation = issue.get('issue', 'No explanation provided')
             issue_sources = issue.get('sources', [])
 
-            # Check if this issue was highlighted or overlapping
-            highlight_status = ""
-            if 'highlight_debug' in st.session_state and original_index < len(st.session_state.highlight_debug):
-                debug_item = st.session_state.highlight_debug[original_index]
-                if debug_item.get('matched') == True:
-                    highlight_status = " 📍"  # Highlighted
-                elif debug_item.get('matched') == 'overlapping':
-                    highlight_status = " 🔗"  # Overlapping with another highlight
-
             # Color for issue type badge
             type_colors = {
                 'Misleading': '🔴',
@@ -1321,7 +1217,7 @@ if st.session_state.fact_check_results is not None:
 
             st.markdown(f"""
             <div id="issue-{original_index}" style="padding: 10px; margin-bottom: 15px; border-left: 3px solid #ccc; background-color: #f9f9f9; color: #000; transition: box-shadow 0.3s;">
-                <b>{icon} Issue #{original_index+1}: {issue_type}{highlight_status}</b><br>
+                <b>{icon} Issue #{original_index+1}: {issue_type}</b><br>
                 <i style="color: #666;">"{excerpt[:100]}{'...' if len(excerpt) > 100 else ''}"</i><br><br>
                 <div style="color: #000;">{explanation}</div>
                 {sources_html}
