@@ -804,7 +804,7 @@ if st.session_state.fact_check_results is not None:
 
         # Legend
         st.markdown("""
-        <div style="margin-top: 20px; margin-bottom: 30px; padding: 10px; background-color: #f0f0f0; border-radius: 5px; color: #000;">
+        <div style="margin-top: 20px; margin-bottom: 30px; padding: 10px; background-color: #1e1e1e; border-radius: 5px; color: #e0e0e0; border: 1px solid #3a3a3a;">
             <b>Legend:</b><br>
             <mark style="background-color: #ffcccc; padding: 2px 4px; color: #000;">Misleading</mark>
             <mark style="background-color: #fff4cc; padding: 2px 4px; color: #000;">Questionable</mark>
@@ -847,20 +847,28 @@ if st.session_state.fact_check_results is not None:
             }
             icon = type_colors.get(issue_type, '⚪')
 
+            # Border colors for each type
+            border_colors = {
+                'Misleading': '#ff4444',
+                'Questionable': '#ffaa00',
+                'Incomplete': '#4499ff'
+            }
+            border_color = border_colors.get(issue_type, '#555')
+
             sources_html = ""
             if issue_sources:
                 sources_html = "<br><br><b>Sources:</b><br>"
                 for idx, src in enumerate(issue_sources, 1):
                     if src.startswith('http'):
-                        sources_html += f'{idx}. <a href="{src}" target="_blank" style="color: #0066cc;">{src}</a><br>'
+                        sources_html += f'{idx}. <a href="{src}" target="_blank" style="color: #66b3ff;">{src}</a><br>'
                     else:
                         sources_html += f'{idx}. {src}<br>'
 
             st.markdown(f"""
-            <div id="issue-{original_index}" style="padding: 10px; margin-bottom: 15px; border-left: 3px solid #ccc; background-color: #f9f9f9; color: #000;">
+            <div id="issue-{original_index}" style="padding: 10px; margin-bottom: 15px; border-left: 4px solid {border_color}; background-color: #2b2b2b; color: #e0e0e0;">
                 <b>{icon} Issue #{original_index+1}: {issue_type}</b><br>
-                <i style="color: #666;">"{excerpt[:100]}{'...' if len(excerpt) > 100 else ''}"</i><br><br>
-                <div style="color: #000;">{explanation}</div>
+                <i style="color: #999;">"{excerpt[:100]}{'...' if len(excerpt) > 100 else ''}"</i><br><br>
+                <div>{explanation}</div>
                 {sources_html}
             </div>
             """, unsafe_allow_html=True)
