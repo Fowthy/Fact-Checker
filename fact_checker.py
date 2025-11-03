@@ -567,7 +567,7 @@ if st.session_state.fact_check_results is not None:
 
     # Display reasoning summary and web searches
     if model_choice.startswith("gpt-5") and reasoning_and_search_items:
-        with st.expander("🧠 Reasoning Summary & Web Search", expanded=False):
+        with st.expander("🧠 Reasoning Summary & Web Search", expanded=True):
             search_counter = 0
             for item in reasoning_and_search_items:
                 if item['type'] == 'reasoning':
@@ -594,17 +594,10 @@ if st.session_state.fact_check_results is not None:
                     st.markdown("")
 
     if issues:
-        # Filter controls
         st.markdown("### Highlighted Text")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            show_misleading = st.checkbox("🔴 Show Misleading", value=True, key="filter_misleading")
-        with col2:
-            show_incomplete = st.checkbox("🔵 Show Incomplete", value=True, key="filter_incomplete")
-        with col3:
-            show_questionable = st.checkbox("🟡 Show Questionable", value=True, key="filter_questionable")
 
-        highlighted_text = highlight_text(current_text, issues, show_misleading, show_incomplete, show_questionable)
+        # Always show all categories
+        highlighted_text = highlight_text(current_text, issues, True, True, True)
 
         # HTML content with highlighting and tooltips
         html_content = f"""
@@ -829,13 +822,6 @@ if st.session_state.fact_check_results is not None:
             issue_type = issue.get('type', 'questionable').title()
             issue_type_lower = issue.get('type', 'questionable')
 
-            if issue_type_lower == 'misleading' and not show_misleading:
-                continue
-            if issue_type_lower == 'incomplete' and not show_incomplete:
-                continue
-            if issue_type_lower == 'questionable' and not show_questionable:
-                continue
-
             excerpt = issue.get('excerpt', 'N/A')
             explanation = issue.get('issue', 'No explanation provided')
             issue_sources = issue.get('sources', [])
@@ -893,3 +879,5 @@ if st.session_state.fact_check_results is not None:
                     st.markdown(f"{idx}. [{source}]({source})")
                 else:
                     st.markdown(f"{idx}. {source}")
+
+
