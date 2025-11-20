@@ -25,6 +25,9 @@ if 'main_text_input' not in st.session_state:
 if 'fact_check_results' not in st.session_state:
     st.session_state.fact_check_results = None
 
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
 # Hardcoded model configuration
 MODEL_CHOICE = "gpt-5"
 REASONING_EFFORT = "high"
@@ -33,19 +36,26 @@ ENABLE_WEB_SEARCH = True
 SEARCH_CONTEXT_SIZE = "medium"
 ENABLE_STREAMING = True
 
-# Sidebar for API key
+# Hardcoded password
+HARDCODED_PASSWORD = 'pJ4d6[N@*C1->"003Ji-\%r'
+
+# Sidebar for password authentication
 with st.sidebar:
     st.header("Configuration")
 
-    api_key_input = st.text_input(
-        "OpenAI API Key",
+    password_input = st.text_input(
+        "Password",
         type="password",
-        help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys"
+        help="Enter the password to access the fact checker"
     )
 
-    if api_key_input:
-        os.environ["OPENAI_API_KEY"] = api_key_input
-        st.success("✅ API Key set")
+    if password_input:
+        if password_input == HARDCODED_PASSWORD:
+            st.session_state.authenticated = True
+            st.success("✅ Authenticated")
+        else:
+            st.session_state.authenticated = False
+            st.error("❌ Incorrect password")
 
     st.divider()
 
@@ -332,8 +342,10 @@ if submit_button:
     current_text = st.session_state.main_text_input
     if not current_text.strip():
         st.error("Please enter some text to fact-check.")
+    elif not st.session_state.authenticated:
+        st.error("Please enter the correct password in the sidebar to continue.")
     elif not os.getenv("OPENAI_API_KEY"):
-        st.error("OpenAI API key not found. Please enter your API key in the sidebar.")
+        st.error("OpenAI API key not found in environment. Please configure it in your secrets.")
     else:
         with st.spinner("Performing deep research and fact-checking..."):
             try:
